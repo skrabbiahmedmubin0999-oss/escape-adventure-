@@ -86,7 +86,13 @@ export interface AdventurerCharacter {
   leftLeg: THREE.Group;
   rightLeg: THREE.Group;
   backpack: THREE.Group;
-  updateAnimation: (time: number, speed: number, isJumping: boolean, isRunning: boolean) => void;
+  updateAnimation: (
+    time: number,
+    speed: number,
+    isJumping: boolean,
+    isRunning: boolean,
+    isCrouching?: boolean
+  ) => void;
   setOutfitColor: (tunicColor: string, hatColor: string) => void;
 }
 
@@ -278,9 +284,15 @@ export function createAdventurerModel(initialTunic = '#e67e22', initialHat = '#8
   root.add(rightLeg);
 
   // Animation method
-  const updateAnimation = (time: number, speed: number, isJumping: boolean, isRunning: boolean) => {
+  const updateAnimation = (
+    time: number,
+    speed: number,
+    isJumping: boolean,
+    isRunning: boolean,
+    isCrouching: boolean = false
+  ) => {
     const runMultiplier = isRunning ? 1.6 : 1.0;
-    const walkFrequency = speed > 0.1 ? 9 * runMultiplier : 2;
+    const walkFrequency = speed > 0.05 ? 10 * Math.max(0.4, speed) * runMultiplier : 2;
 
     if (isJumping) {
       // In air jump pose
@@ -290,7 +302,16 @@ export function createAdventurerModel(initialTunic = '#e67e22', initialHat = '#8
       rightArm.rotation.x = -1.2;
       torso.position.y = 1.15;
       head.rotation.x = -0.2;
-    } else if (speed > 0.1) {
+    } else if (isCrouching) {
+      // Stealth Crouch Posture
+      const swing = speed > 0.05 ? Math.sin(time * walkFrequency) * 0.4 : 0;
+      leftLeg.rotation.x = 0.35 + swing;
+      rightLeg.rotation.x = 0.35 - swing;
+      leftArm.rotation.x = -0.5 - swing * 0.5;
+      rightArm.rotation.x = -0.5 + swing * 0.5;
+      torso.position.y = 0.72 + (speed > 0.05 ? Math.abs(Math.sin(time * walkFrequency)) * 0.03 : 0);
+      head.rotation.x = 0.2;
+    } else if (speed > 0.05) {
       // Running / Walking cycle
       const swing = Math.sin(time * walkFrequency) * 0.7 * (speed > 0.5 ? 1.2 : 0.8);
       leftLeg.rotation.x = swing;
@@ -302,6 +323,7 @@ export function createAdventurerModel(initialTunic = '#e67e22', initialHat = '#8
       // Subtle torso bobbing and twist
       torso.position.y = 1.05 + Math.abs(Math.sin(time * walkFrequency)) * 0.08;
       torso.rotation.y = Math.sin(time * walkFrequency) * 0.12;
+      head.rotation.x = 0;
       head.rotation.y = -Math.sin(time * walkFrequency) * 0.08;
     } else {
       // Idle breathing pose
@@ -312,6 +334,7 @@ export function createAdventurerModel(initialTunic = '#e67e22', initialHat = '#8
       rightArm.rotation.x = -breath * 0.06;
       torso.position.y = 1.05 + breath * 0.02;
       torso.rotation.y = 0;
+      head.rotation.x = 0;
       head.rotation.y = 0;
       head.position.y = 0.52 + breath * 0.01;
     }
@@ -2046,3 +2069,423 @@ export function createFinishLineArch(): THREE.Group {
 }
 
 
+
+
+/**
+ * Procedural PBR Canvas Texture Generators (0-dependency, razor sharp)
+ */
+export function createCobblestoneCanvasTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    ctx.fillStyle = '#b3a280';
+    ctx.fillRect(0, 0, 512, 512);
+
+    ctx.strokeStyle = '#5c4e36';
+    ctx.lineWidth = 4;
+    const cols = 16;
+    const rows = 16;
+    const cw = 512 / cols;
+    const rh = 512 / rows;
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const x = c * cw + ((r % 2) * cw * 0.5);
+        const y = r * rh;
+        ctx.fillStyle = (r + c) % 2 === 0 ? '#bfae8a' : '#a89874';
+        ctx.beginPath();
+        ctx.roundRect(x + 2, y + 2, cw - 4, rh - 4, 6);
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(6, 6);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/**
+ * Real-world Stone Cottage with Wall Thickness, Windows, Timber Roof, and Usable Doorway
+ */
+export function createStoneCottage(width = 6.0, height = 3.5, depth = 5.0): THREE.Group {
+  const building = new THREE.Group();
+  building.name = 'StoneCottage';
+
+  const wallMat = new THREE.MeshStandardMaterial({
+    color: 0x94a3b8, // Slate stone
+    roughness: 0.85,
+    metalness: 0.1,
+  });
+
+  const timberMat = new THREE.MeshStandardMaterial({
+    color: 0x78350f, // Dark timber wood
+    roughness: 0.75,
+    metalness: 0.05,
+  });
+
+  const roofMat = new THREE.MeshStandardMaterial({
+    color: 0xb91c1c, // Terracotta roof tiles
+    roughness: 0.7,
+    metalness: 0.1,
+  });
+
+  const glassMat = new THREE.MeshPhysicalMaterial({
+    color: 0xbae6fd,
+    transmission: 0.85,
+    roughness: 0.1,
+    ior: 1.5,
+    thickness: 0.2,
+    transparent: true,
+    opacity: 0.9,
+  });
+
+  // Base stone foundation slab
+  const foundGeo = new THREE.BoxGeometry(width + 0.4, 0.4, depth + 0.4);
+  const found = new THREE.Mesh(foundGeo, wallMat);
+  found.position.y = 0.2;
+  found.receiveShadow = true;
+  building.add(found);
+
+  // Outer Walls with Doorway Opening
+  const wallThick = 0.35;
+  const h = height;
+
+  // Back Wall (solid)
+  const backWallGeo = new THREE.BoxGeometry(width, h, wallThick);
+  const backWall = new THREE.Mesh(backWallGeo, wallMat);
+  backWall.position.set(0, h * 0.5 + 0.4, -depth * 0.5 + wallThick * 0.5);
+  backWall.castShadow = true;
+  backWall.receiveShadow = true;
+  building.add(backWall);
+
+  // Left Wall (solid)
+  const leftWallGeo = new THREE.BoxGeometry(wallThick, h, depth - wallThick * 2);
+  const leftWall = new THREE.Mesh(leftWallGeo, wallMat);
+  leftWall.position.set(-width * 0.5 + wallThick * 0.5, h * 0.5 + 0.4, 0);
+  leftWall.castShadow = true;
+  leftWall.receiveShadow = true;
+  building.add(leftWall);
+
+  // Right Wall (with Window cutout)
+  const rightWallGeo = new THREE.BoxGeometry(wallThick, h, depth - wallThick * 2);
+  const rightWall = new THREE.Mesh(rightWallGeo, wallMat);
+  rightWall.position.set(width * 0.5 - wallThick * 0.5, h * 0.5 + 0.4, 0);
+  rightWall.castShadow = true;
+  rightWall.receiveShadow = true;
+  building.add(rightWall);
+
+  // Front Wall (Split around 1.4m wide Usable Doorway at center)
+  const doorWidth = 1.4;
+  const sideWallWidth = (width - doorWidth) * 0.5;
+
+  const frontWallLGeo = new THREE.BoxGeometry(sideWallWidth, h, wallThick);
+  const frontWallL = new THREE.Mesh(frontWallLGeo, wallMat);
+  frontWallL.position.set(-width * 0.5 + sideWallWidth * 0.5, h * 0.5 + 0.4, depth * 0.5 - wallThick * 0.5);
+  frontWallL.castShadow = true;
+  building.add(frontWallL);
+
+  const frontWallRGeo = new THREE.BoxGeometry(sideWallWidth, h, wallThick);
+  const frontWallR = new THREE.Mesh(frontWallRGeo, wallMat);
+  frontWallR.position.set(width * 0.5 - sideWallWidth * 0.5, h * 0.5 + 0.4, depth * 0.5 - wallThick * 0.5);
+  frontWallR.castShadow = true;
+  building.add(frontWallR);
+
+  // Lintel / Header over doorway
+  const lintelGeo = new THREE.BoxGeometry(doorWidth + 0.2, 0.8, wallThick + 0.05);
+  const lintel = new THREE.Mesh(lintelGeo, timberMat);
+  lintel.position.set(0, h + 0.0, depth * 0.5 - wallThick * 0.5);
+  lintel.castShadow = true;
+  building.add(lintel);
+
+  // Recessed Open Wooden Door
+  const doorPanelGeo = new THREE.BoxGeometry(0.08, 2.3, 1.25);
+  const doorPanel = new THREE.Mesh(doorPanelGeo, timberMat);
+  doorPanel.position.set(-doorWidth * 0.45, 1.55, depth * 0.5 - wallThick * 0.5 - 0.5);
+  doorPanel.rotation.y = Math.PI * 0.35; // Ajar open into room
+  doorPanel.castShadow = true;
+  building.add(doorPanel);
+
+  // Timber Roof Gable & Overhang
+  const roofGableGeo = new THREE.ConeGeometry(Math.hypot(width, depth) * 0.42, 2.2, 4);
+  roofGableGeo.rotateY(Math.PI * 0.25);
+  const roof = new THREE.Mesh(roofGableGeo, roofMat);
+  roof.position.set(0, h + 1.5, 0);
+  roof.scale.set(1.15, 1.0, 1.15);
+  roof.castShadow = true;
+  building.add(roof);
+
+  // Glass Window with Timber Frame on Front Right Wall
+  const winFrameGeo = new THREE.BoxGeometry(0.9, 1.1, 0.15);
+  const winFrame = new THREE.Mesh(winFrameGeo, timberMat);
+  winFrame.position.set(width * 0.25, 2.1, depth * 0.5 - 0.05);
+  building.add(winFrame);
+
+  const winGlassGeo = new THREE.PlaneGeometry(0.7, 0.9);
+  const winGlass = new THREE.Mesh(winGlassGeo, glassMat);
+  winGlass.position.set(width * 0.25, 2.1, depth * 0.5 + 0.02);
+  building.add(winGlass);
+
+  // Warm indoor lantern glowing through window & doorway
+  const indoorLight = new THREE.PointLight(0xf59e0b, 1.2, 8);
+  indoorLight.position.set(0, 2.2, 0);
+  building.add(indoorLight);
+
+  return building;
+}
+
+/**
+ * Guard Watchtower with Deck, Ladder, & Torch Lantern
+ */
+export function createWatchtower(): THREE.Group {
+  const tower = new THREE.Group();
+  tower.name = 'GuardWatchtower';
+
+  const woodMat = new THREE.MeshStandardMaterial({ color: 0x5c3d2e, roughness: 0.8 });
+  const roofMat = new THREE.MeshStandardMaterial({ color: 0x3f2a1d, roughness: 0.9 });
+
+  // 4 Thick Corner Posts
+  const postPositions = [
+    [-1.4, -1.4], [1.4, -1.4],
+    [-1.4, 1.4], [1.4, 1.4],
+  ];
+  postPositions.forEach(([px, pz]) => {
+    const postGeo = new THREE.CylinderGeometry(0.18, 0.24, 6.2, 6);
+    const post = new THREE.Mesh(postGeo, woodMat);
+    post.position.set(px, 3.1, pz);
+    post.castShadow = true;
+    tower.add(post);
+  });
+
+  // Cross Bracing Timber Beams
+  const braceGeo = new THREE.CylinderGeometry(0.1, 0.1, 3.8, 6);
+  const brace1 = new THREE.Mesh(braceGeo, woodMat);
+  brace1.position.set(0, 2.2, 1.4);
+  brace1.rotation.z = Math.PI * 0.25;
+  tower.add(brace1);
+
+  // Guard Deck Platform
+  const deckGeo = new THREE.BoxGeometry(3.6, 0.25, 3.6);
+  const deck = new THREE.Mesh(deckGeo, woodMat);
+  deck.position.set(0, 4.5, 0);
+  deck.castShadow = true;
+  tower.add(deck);
+
+  // Safety Railings around deck
+  const railGeo = new THREE.BoxGeometry(3.6, 0.1, 0.1);
+  const railF = new THREE.Mesh(railGeo, woodMat);
+  railF.position.set(0, 5.3, 1.7);
+  const railB = new THREE.Mesh(railGeo, woodMat);
+  railB.position.set(0, 5.3, -1.7);
+  tower.add(railF, railB);
+
+  // Roof Canopy
+  const roofGeo = new THREE.ConeGeometry(2.8, 1.6, 4);
+  roofGeo.rotateY(Math.PI * 0.25);
+  const roof = new THREE.Mesh(roofGeo, roofMat);
+  roof.position.set(0, 6.8, 0);
+  roof.castShadow = true;
+  tower.add(roof);
+
+  // Guard Torch / Lantern on deck
+  const torchLight = new THREE.PointLight(0xff7700, 1.5, 12);
+  torchLight.position.set(0, 5.2, 0);
+  tower.add(torchLight);
+
+  return tower;
+}
+
+/**
+ * Merchant Wooden Supply Wagon
+ */
+export function createSupplyWagon(): THREE.Group {
+  const wagon = new THREE.Group();
+  wagon.name = 'SupplyWagon';
+
+  const woodMat = new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.85 });
+  const ironMat = new THREE.MeshStandardMaterial({ color: 0x334155, metalness: 0.8, roughness: 0.3 });
+  const canvasMat = new THREE.MeshStandardMaterial({ color: 0xfef08a, roughness: 0.9 });
+
+  // Main Wagon Bed Box
+  const bedGeo = new THREE.BoxGeometry(1.8, 0.7, 3.2);
+  const bed = new THREE.Mesh(bedGeo, woodMat);
+  bed.position.y = 1.0;
+  bed.castShadow = true;
+  wagon.add(bed);
+
+  // Arched Canvas Cover
+  const coverGeo = new THREE.CylinderGeometry(0.95, 0.95, 3.2, 12, 1, false, 0, Math.PI);
+  coverGeo.rotateZ(Math.PI * 0.5);
+  coverGeo.rotateY(Math.PI * 0.5);
+  const cover = new THREE.Mesh(coverGeo, canvasMat);
+  cover.position.set(0, 1.35, 0);
+  cover.castShadow = true;
+  wagon.add(cover);
+
+  // 4 Spoked Wheels
+  const wheelPositions = [
+    [-1.0, 0.55, -1.1], [1.0, 0.55, -1.1],
+    [-1.0, 0.55, 1.1], [1.0, 0.55, 1.1],
+  ];
+  wheelPositions.forEach(([wx, wy, wz]) => {
+    const wheelGeo = new THREE.CylinderGeometry(0.55, 0.55, 0.12, 12);
+    wheelGeo.rotateZ(Math.PI * 0.5);
+    const wheel = new THREE.Mesh(wheelGeo, ironMat);
+    wheel.position.set(wx, wy, wz);
+    wheel.castShadow = true;
+    wagon.add(wheel);
+  });
+
+  // Front Hitch Bar
+  const hitchGeo = new THREE.CylinderGeometry(0.06, 0.06, 1.8, 6);
+  const hitch = new THREE.Mesh(hitchGeo, woodMat);
+  hitch.rotation.x = Math.PI * 0.5;
+  hitch.position.set(0, 0.4, 2.4);
+  wagon.add(hitch);
+
+  return wagon;
+}
+
+/**
+ * Iron Streetlamp with Glass Lantern and Warm Light
+ */
+export function createStreetlamp(): THREE.Group {
+  const lamp = new THREE.Group();
+  lamp.name = 'IronStreetlamp';
+
+  const ironMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, metalness: 0.85, roughness: 0.25 });
+  const glassMat = new THREE.MeshPhysicalMaterial({ color: 0xfef08a, transmission: 0.8, roughness: 0.1 });
+
+  // Base Pedestal
+  const baseGeo = new THREE.CylinderGeometry(0.28, 0.35, 0.4, 8);
+  const base = new THREE.Mesh(baseGeo, ironMat);
+  base.position.y = 0.2;
+  base.castShadow = true;
+  lamp.add(base);
+
+  // Pole Shaft
+  const poleGeo = new THREE.CylinderGeometry(0.08, 0.12, 3.2, 8);
+  const pole = new THREE.Mesh(poleGeo, ironMat);
+  pole.position.y = 1.8;
+  pole.castShadow = true;
+  lamp.add(pole);
+
+  // Ornate Lantern Housing
+  const lanternGeo = new THREE.BoxGeometry(0.4, 0.5, 0.4);
+  const lantern = new THREE.Mesh(lanternGeo, glassMat);
+  lantern.position.y = 3.5;
+  lamp.add(lantern);
+
+  const capGeo = new THREE.ConeGeometry(0.35, 0.25, 4);
+  capGeo.rotateY(Math.PI * 0.25);
+  const cap = new THREE.Mesh(capGeo, ironMat);
+  cap.position.y = 3.82;
+  lamp.add(cap);
+
+  // Point Light
+  const pLight = new THREE.PointLight(0xf59e0b, 1.6, 12);
+  pLight.position.y = 3.5;
+  lamp.add(pLight);
+
+  return lamp;
+}
+
+/**
+ * Courtyard Park Bench
+ */
+export function createParkBench(): THREE.Group {
+  const bench = new THREE.Group();
+  bench.name = 'ParkBench';
+
+  const woodMat = new THREE.MeshStandardMaterial({ color: 0x92400e, roughness: 0.75 });
+  const ironMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, metalness: 0.8, roughness: 0.3 });
+
+  // Cast iron legs
+  const legGeo = new THREE.BoxGeometry(0.1, 0.6, 0.6);
+  const legL = new THREE.Mesh(legGeo, ironMat);
+  legL.position.set(-0.7, 0.3, 0);
+  const legR = new THREE.Mesh(legGeo, ironMat);
+  legR.position.set(0.7, 0.3, 0);
+  bench.add(legL, legR);
+
+  // Wooden slatted seat
+  for (let i = 0; i < 3; i++) {
+    const slatGeo = new THREE.BoxGeometry(1.6, 0.05, 0.14);
+    const slat = new THREE.Mesh(slatGeo, woodMat);
+    slat.position.set(0, 0.58, (i - 1) * 0.18);
+    slat.castShadow = true;
+    bench.add(slat);
+  }
+
+  // Backrest slats
+  for (let i = 0; i < 2; i++) {
+    const slatGeo = new THREE.BoxGeometry(1.6, 0.14, 0.05);
+    const slat = new THREE.Mesh(slatGeo, woodMat);
+    slat.position.set(0, 0.85 + i * 0.18, -0.22);
+    slat.castShadow = true;
+    bench.add(slat);
+  }
+
+  return bench;
+}
+
+/**
+ * Dense Green Boxwood Hedge
+ */
+export function createHedge(length = 4.0): THREE.Group {
+  const hedge = new THREE.Group();
+  hedge.name = 'BoxwoodHedge';
+
+  const leafMat = new THREE.MeshStandardMaterial({
+    color: 0x15803d,
+    roughness: 0.85,
+    metalness: 0.05,
+    flatShading: true,
+  });
+
+  const geo = new THREE.BoxGeometry(0.8, 1.4, length);
+  const mesh = new THREE.Mesh(geo, leafMat);
+  mesh.position.y = 0.7;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  hedge.add(mesh);
+
+  return hedge;
+}
+
+/**
+ * Timber Fence Section
+ */
+export function createPerimeterFence(length = 5.0): THREE.Group {
+  const fence = new THREE.Group();
+  fence.name = 'PerimeterFence';
+
+  const woodMat = new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.8 });
+
+  const numPosts = Math.max(2, Math.floor(length / 1.8));
+  for (let i = 0; i < numPosts; i++) {
+    const t = i / (numPosts - 1);
+    const z = (t - 0.5) * length;
+
+    const postGeo = new THREE.CylinderGeometry(0.08, 0.1, 1.3, 6);
+    const post = new THREE.Mesh(postGeo, woodMat);
+    post.position.set(0, 0.65, z);
+    post.castShadow = true;
+    fence.add(post);
+  }
+
+  // Cross rails
+  const railGeo = new THREE.BoxGeometry(0.06, 0.08, length);
+  const rail1 = new THREE.Mesh(railGeo, woodMat);
+  rail1.position.set(0, 0.45, 0);
+  const rail2 = new THREE.Mesh(railGeo, woodMat);
+  rail2.position.set(0, 0.95, 0);
+  fence.add(rail1, rail2);
+
+  return fence;
+}

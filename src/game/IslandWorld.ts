@@ -31,6 +31,13 @@ import {
   createSurvivalCrystal,
   createCheckpointArch,
   createFinishLineArch,
+  createStoneCottage,
+  createWatchtower,
+  createSupplyWagon,
+  createStreetlamp,
+  createParkBench,
+  createHedge,
+  createPerimeterFence,
   TreasureChestInstance,
   getIslandHeight,
   AdventurerCharacter,
@@ -40,14 +47,15 @@ import { puzzleSystem } from './puzzleSystem';
 import { obstacleSystem } from './obstacleSystem';
 import { survivalSystem } from './survivalSystem';
 import { networkSync } from './networkSync';
+import { CameraController } from './cameraController';
+import { CollisionSystem, CollisionLayer } from './collisionSystem';
+import { GuardAIController } from './guardAI';
 
 
 // Pre-allocated math variables for 0-GC loop
 const _vec3A = new THREE.Vector3();
 const _vec3B = new THREE.Vector3();
 const _vec3Move = new THREE.Vector3();
-const _camTarget = new THREE.Vector3();
-const _camPos = new THREE.Vector3();
 const _targetSunPos = new THREE.Vector3();
 const _targetSunColor = new THREE.Color();
 const _targetHemiSky = new THREE.Color();
@@ -128,6 +136,7 @@ export interface InputState {
   left: boolean;
   right: boolean;
   sprint: boolean;
+  crouch: boolean;
   jump: boolean;
   interact: boolean;
   // Virtual joystick (-1 to 1)
@@ -144,6 +153,11 @@ export class IslandWorld {
   private animationFrameId: number = 0;
   private clock: THREE.Clock;
 
+  // Sub-system Controllers
+  public cameraController: CameraController = new CameraController();
+  public collisionSystem: CollisionSystem = new CollisionSystem();
+  public guardAIController: GuardAIController = new GuardAIController();
+
   // Game mode
   public mode: GameMode = 'menu';
 
@@ -151,6 +165,7 @@ export class IslandWorld {
   public player: AdventurerCharacter;
   public playerPos: THREE.Vector3 = new THREE.Vector3(-22, 1.0, 24); // Starting beach campsite
   public playerVel: THREE.Vector3 = new THREE.Vector3();
+  public playerVelocity: THREE.Vector3 = new THREE.Vector3(); // Smoothed velocity vector for lerp-based movement
   public playerRotation: number = 0;
   public isGrounded: boolean = true;
   private footstepTimer: number = 0;
@@ -160,12 +175,21 @@ export class IslandWorld {
   public companionPos: THREE.Vector3 = new THREE.Vector3(-20, 1.0, 25);
   public companionActive: boolean = false;
 
-  // Camera Orbit Settings
-  public cameraDistance: number = 6.8;
-  public cameraPitch: number = 0.35; // radians
-  public cameraYaw: number = 0; // radians
-  public mouseSensitivity: number = 1.0;
-  public invertY: boolean = false;
+  // Camera Orbit Settings (Delegated to cameraController)
+  public get cameraDistance(): number { return this.cameraController.cameraDistance; }
+  public set cameraDistance(val: number) { this.cameraController.cameraDistance = val; }
+
+  public get cameraPitch(): number { return this.cameraController.cameraPitch; }
+  public set cameraPitch(val: number) { this.cameraController.cameraPitch = val; }
+
+  public get cameraYaw(): number { return this.cameraController.cameraYaw; }
+  public set cameraYaw(val: number) { this.cameraController.cameraYaw = val; }
+
+  public get mouseSensitivity(): number { return this.cameraController.mouseSensitivity; }
+  public set mouseSensitivity(val: number) { this.cameraController.mouseSensitivity = val; }
+
+  public get invertY(): boolean { return this.cameraController.invertY; }
+  public set invertY(val: boolean) { this.cameraController.invertY = Boolean(val); }
 
   // World Elements
   private waterMesh: THREE.Mesh;
@@ -176,7 +200,10 @@ export class IslandWorld {
   private altarPosition: THREE.Vector3 = new THREE.Vector3(0, 2.8, 2);
 
   // Collectibles, Obstacles & Hazards
-  private worldObstacles: Array<{ x: number; z: number; radius: number }> = [];
+  public get worldObstacles() {
+    return this.collisionSystem.getObstacles();
+  }
+
   private chests: Array<{
     id: string;
     name: string;
@@ -227,37 +254,24 @@ export class IslandWorld {
   public onOpenPuzzleModal?: (puzzleId: string) => void;
 
   private lastReportedSecond: number = -1;
-  private colliderMeshes: THREE.Mesh[] = [];
-  private showColliders: boolean = false;
 
-  public toggleColliderWireframes(): boolean {
-    this.showColliders = !this.showColliders;
-    if (this.colliderMeshes.length === 0 && this.showColliders) {
-      // Build wireframe meshes for each obstacle
-      const wireMat = new THREE.MeshBasicMaterial({
-        color: 0x00ff00,
-        wireframe: true,
-      });
+  public togglePhysicsWireframes(): boolean {
+    const isVisible = this.collisionSystem.togglePhysicsWireframes(this.scene);
 
-      for (const obs of this.worldObstacles) {
-        const h = 4.0;
-        const geo = new THREE.CylinderGeometry(obs.radius, obs.radius, h, 12);
-        const mesh = new THREE.Mesh(geo, wireMat);
-        const y = getIslandHeight(obs.x, obs.z) + h * 0.5;
-        mesh.position.set(obs.x, y, obs.z);
-        this.scene.add(mesh);
-        this.colliderMeshes.push(mesh);
+    // Iterate through all Mesh objects in the scene and toggle visibility of associated physics wireframe meshes
+    this.scene.traverse((object) => {
+      if (object instanceof THREE.Mesh) {
+        if (object.userData && object.userData.physicsWireframe instanceof THREE.Mesh) {
+          object.userData.physicsWireframe.visible = isVisible;
+        }
+        if (object.userData && object.userData.isPhysicsWireframe) {
+          object.visible = isVisible;
+        }
       }
-    } else {
-      this.colliderMeshes.forEach((m) => {
-        m.visible = this.showColliders;
-      });
-    }
-    return this.showColliders;
+    });
+
+    return isVisible;
   }
-
-
-
 
   // Active inputs
   public inputs: InputState = {
@@ -266,6 +280,7 @@ export class IslandWorld {
     left: false,
     right: false,
     sprint: false,
+    crouch: false,
     jump: false,
     interact: false,
     joystickX: 0,
@@ -275,7 +290,6 @@ export class IslandWorld {
   private currentInteractTarget: string | null = null;
   private lastActivePrompt: string | null = null;
   private wasNearSign: boolean = false;
-  private smoothedMoveDir: THREE.Vector3 = new THREE.Vector3();
 
   // Dynamic Environment & Lighting System
   private sunLight!: THREE.DirectionalLight;
@@ -286,8 +300,6 @@ export class IslandWorld {
   private windSystem: ReturnType<typeof createWindLeavesSystem> | null = null;
   private grassSystem: ReturnType<typeof createInstancedGrass> | null = null;
   private flowerSystem: THREE.InstancedMesh | null = null;
-  private currentSkyColor: THREE.Color = new THREE.Color(0x8cd3ff);
-  private currentFogColor: THREE.Color = new THREE.Color(0x8cd3ff);
   public environmentState: EnvironmentState = {
     timeOfDay: 'day',
     weather: 'clear',
@@ -378,7 +390,6 @@ export class IslandWorld {
     this.setupBouncePads();
     this.setupObstaclesAndPuzzles();
 
-
     // 9. Floating light motes
     this.setupMotes();
 
@@ -392,6 +403,12 @@ export class IslandWorld {
     this.companion.group.position.copy(this.companionPos);
     this.companion.group.visible = false;
     this.scene.add(this.companion.group);
+
+    // 12. Guard Patrol AI setup
+    this.guardAIController.initGuards(this.scene);
+    this.guardAIController.onPlayerCaught = (guardName) => {
+      this.triggerFailure(`Spotted and caught by ${guardName}!`);
+    };
 
     // Bind event listeners
     window.addEventListener('resize', this.onResize);
@@ -453,6 +470,93 @@ export class IslandWorld {
     bridge.rotation.y = 0.45;
     this.scene.add(bridge);
 
+    // --- Architectural Outpost & Settlement Structures ---
+    // 1. Village Cottage North (x: -10, z: 12)
+    const cottageN = createStoneCottage(6.2, 3.6, 5.2);
+    const cottageNy = getIslandHeight(-10, 12);
+    cottageN.position.set(-10, cottageNy, 12);
+    cottageN.rotation.y = 0.2;
+    this.scene.add(cottageN);
+    this.collisionSystem.registerBoxObstacle(-13.1, -6.9, 9.4, 14.6, CollisionLayer.STATIC_WORLD);
+    this.collisionSystem.registerDoor('cottage_north_door', -10.7, -9.3, 14.3, 14.7);
+    this.collisionSystem.setDoorOpen('cottage_north_door', true);
+
+    // 2. Village Storehouse South (x: -4, z: 16)
+    const cottageS = createStoneCottage(5.4, 3.4, 4.8);
+    const cottageSy = getIslandHeight(-4, 16);
+    cottageS.position.set(-4, cottageSy, 16);
+    cottageS.rotation.y = -0.35;
+    this.scene.add(cottageS);
+    this.collisionSystem.registerBoxObstacle(-6.7, -1.3, 13.6, 18.4, CollisionLayer.STATIC_WORLD);
+    this.collisionSystem.registerDoor('cottage_south_door', -4.7, -3.3, 18.2, 18.6);
+    this.collisionSystem.setDoorOpen('cottage_south_door', true);
+
+    // 3. Coastal Guard Watchtower (x: -28, z: 8)
+    const tower = createWatchtower();
+    const towerY = getIslandHeight(-28, 8);
+    tower.position.set(-28, towerY, 8);
+    this.scene.add(tower);
+    this.collisionSystem.registerObstacle(-28, 8, 1.8);
+
+    // 4. Merchant Supply Wagon (x: -12, z: 18)
+    const wagon = createSupplyWagon();
+    const wagonY = getIslandHeight(-12, 18);
+    wagon.position.set(-12, wagonY, 18);
+    wagon.rotation.y = 0.6;
+    this.scene.add(wagon);
+    this.collisionSystem.registerObstacle(-12, 18, 1.6);
+
+    // 5. Village Iron Streetlamps
+    const lampCoords = [
+      { x: -8, z: 8 },
+      { x: 8, z: -8 },
+      { x: 0, z: -4 },
+      { x: -18, z: 20 },
+    ];
+    lampCoords.forEach((lp) => {
+      const lamp = createStreetlamp();
+      const ly = getIslandHeight(lp.x, lp.z);
+      lamp.position.set(lp.x, ly, lp.z);
+      this.scene.add(lamp);
+      this.collisionSystem.registerObstacle(lp.x, lp.z, 0.4);
+    });
+
+    // 6. Courtyard Park Bench
+    const bench = createParkBench();
+    const benchY = getIslandHeight(-7, 6);
+    bench.position.set(-7, benchY, 6);
+    bench.rotation.y = 0.5;
+    this.scene.add(bench);
+    this.collisionSystem.registerObstacle(-7, 6, 0.8);
+
+    // 7. Boxwood Hedges for Stealth Cover
+    const hedgeCoords = [
+      { x: -6, z: 10, rot: 0.1 },
+      { x: -2, z: 12, rot: 0.8 },
+    ];
+    hedgeCoords.forEach((h) => {
+      const hedge = createHedge(4.2);
+      const hy = getIslandHeight(h.x, h.z);
+      hedge.position.set(h.x, hy, h.z);
+      hedge.rotation.y = h.rot;
+      this.scene.add(hedge);
+      this.collisionSystem.registerObstacle(h.x, h.z, 1.2);
+    });
+
+    // 8. Perimeter Timber Fences
+    const fenceCoords = [
+      { x: -14, z: 14, rot: 0.3, len: 5.5 },
+      { x: -24, z: 12, rot: -0.2, len: 6.0 },
+    ];
+    fenceCoords.forEach((fc) => {
+      const fence = createPerimeterFence(fc.len);
+      const fy = getIslandHeight(fc.x, fc.z);
+      fence.position.set(fc.x, fy, fc.z);
+      fence.rotation.y = fc.rot;
+      this.scene.add(fence);
+      this.collisionSystem.registerObstacle(fc.x, fc.z, 1.5);
+    });
+
     // Plant trees across zones
     const treeConfigs: Array<{ type: 'palm' | 'oak' | 'pine' | 'sacred'; x: number; z: number }> = [
       // Sacred Grove (giant ancient tree + pines)
@@ -501,7 +605,7 @@ export class IslandWorld {
 
       // Register physical tree trunk collision boundary
       const trunkRadius = cfg.type === 'sacred' ? 1.6 : cfg.type === 'palm' ? 0.65 : 0.9 * s;
-      this.worldObstacles.push({ x: cfg.x, z: cfg.z, radius: trunkRadius });
+      this.collisionSystem.registerObstacle(cfg.x, cfg.z, trunkRadius);
     });
 
     // Scatter rocks & boulders
@@ -524,22 +628,25 @@ export class IslandWorld {
       this.scene.add(rock);
 
       // Register physical rock boulder collision boundary
-      this.worldObstacles.push({ x: r.x, z: r.z, radius: r.s * 0.7 });
+      this.collisionSystem.registerObstacle(r.x, r.z, r.s * 0.7);
     });
 
     // Register Altar, Gate, Temple & Shrine collision boundaries
-    this.worldObstacles.push({ x: 0, z: 2, radius: 1.3 }); // Rune Altar
-    this.worldObstacles.push({ x: 0, z: -30, radius: 1.8 }); // Escape Gate pillars
-    this.worldObstacles.push({ x: 18, z: -18, radius: 2.2 }); // Sun Temple ruins core
+    this.collisionSystem.registerObstacle(0, 2, 1.3); // Rune Altar
+    this.collisionSystem.registerObstacle(0, -30, 1.8); // Escape Gate pillars
+    this.collisionSystem.registerObstacle(18, -18, 2.2); // Sun Temple ruins core
 
-
-    // Helper obstacle check for vegetation (avoids roads, puzzles, campsite, gate, bridge)
+    // Helper obstacle check for vegetation (avoids roads, puzzles, campsite, gate, bridge, cottages, watchtower)
     const isObstacle = (x: number, z: number) => {
       if (Math.hypot(x - (-22), z - 24) < 5.5) return true; // Campsite
       if (Math.hypot(x, z - 2) < 5.5) return true; // Altar
       if (Math.hypot(x, z - (-30)) < 5.5) return true; // Gate
       if (Math.hypot(x - 18, z - (-18)) < 7) return true; // Sun Temple
       if (Math.hypot(x - (-18), z - 4) < 4.5) return true; // Bridge
+      if (Math.hypot(x - (-10), z - 12) < 4.5) return true; // Village Cottage North
+      if (Math.hypot(x - (-4), z - 16) < 4.2) return true; // Village Storehouse South
+      if (Math.hypot(x - (-28), z - 8) < 3.2) return true; // Coastal Watchtower
+      if (Math.hypot(x - (-12), z - 18) < 3.0) return true; // Merchant Wagon
       const riverT = THREE.MathUtils.clamp((x + 36) / 24, 0, 1);
       const riverX = -36 + riverT * 24;
       const riverZ = 20 - riverT * 30 + Math.sin(riverT * Math.PI) * 5;
@@ -1072,15 +1179,7 @@ export class IslandWorld {
     }
 
     if (this.mode === 'menu') {
-      // Atmospheric cinematic orbit around the island
-      const orbitRadius = 45;
-      const orbitSpeed = 0.12;
-      const camX = Math.sin(time * orbitSpeed) * orbitRadius;
-      const camZ = Math.cos(time * orbitSpeed) * orbitRadius;
-      this.camera.position.set(camX, 20 + Math.sin(time * 0.2) * 3, camZ);
-      this.camera.lookAt(0, 4, 0);
-
-      // Idle character animation at beach
+      this.cameraController.update(this.camera, this.playerPos, dt, this.mode, time);
       this.player.updateAnimation(time, 0, false, false);
     } else if (this.mode === 'playing') {
       this.questProgress.timeElapsed += dt;
@@ -1093,35 +1192,29 @@ export class IslandWorld {
       }
 
       this.updatePlayer(dt, time);
-      this.updateCamera(dt);
+      this.cameraController.update(this.camera, this.playerPos, dt, this.mode, time);
       this.checkInteractions();
 
-      // Companion simulated idle/follow
-      if (this.companionActive && this.companion) {
-        // Smoothly follow player at a polite 2.5m distance
-        const distToPlayer = this.companionPos.distanceTo(this.playerPos);
-        if (distToPlayer > 2.8) {
-          _vec3A.subVectors(this.playerPos, this.companionPos).normalize().multiplyScalar(dt * 3.8);
-          this.companionPos.x += _vec3A.x;
-          this.companionPos.z += _vec3A.z;
-          this.companion.group.rotation.y = Math.atan2(_vec3A.x, _vec3A.z);
-          this.companion.updateAnimation(time, 1, false, false);
-        } else {
-          this.companion.updateAnimation(time, 0, false, false);
-        }
-        const companionGroundY = getIslandHeight(this.companionPos.x, this.companionPos.z);
-        this.companionPos.y = companionGroundY;
-        this.companion.group.position.copy(this.companionPos);
-      }
-    } else if (this.mode === 'victory') {
-      // Victory orbit around player at the opened gate
-      const vicAngle = time * 0.6;
-      this.camera.position.set(
-        this.playerPos.x + Math.sin(vicAngle) * 7,
-        this.playerPos.y + 4.5,
-        this.playerPos.z + Math.cos(vicAngle) * 7
+      // Guard AI Patrol, Detection, Vision FOV & Chase
+      this.guardAIController.updateGuards(
+        this.playerPos,
+        this.inputs.crouch,
+        this.inputs.sprint,
+        dt,
+        time
       );
-      this.camera.lookAt(this.playerPos.x, this.playerPos.y + 1.2, this.playerPos.z);
+
+      // Companion simulated idle/follow
+      this.guardAIController.updateCompanion(
+        this.companion,
+        this.companionPos,
+        this.playerPos,
+        this.companionActive,
+        dt,
+        time
+      );
+    } else if (this.mode === 'victory') {
+      this.cameraController.update(this.camera, this.playerPos, dt, this.mode, time);
       this.player.updateAnimation(time, 0, false, false);
 
       if (this.victoryParticles) {
@@ -1135,8 +1228,9 @@ export class IslandWorld {
 
   // --- Player Physics & Kinematics ---
   private updatePlayer(dt: number, time: number) {
-    const isRunning = this.inputs.sprint;
-    const baseSpeed = isRunning ? 7.8 : 4.5;
+    const isCrouching = this.inputs.crouch;
+    const isRunning = this.inputs.sprint && !isCrouching;
+    const baseSpeed = isCrouching ? 2.2 : isRunning ? 7.8 : 4.5;
 
     // Calculate move vector from keyboard and joystick
     _vec3Move.set(0, 0, 0);
@@ -1149,7 +1243,7 @@ export class IslandWorld {
     if (this.inputs.right) rightInput += 1;
     if (this.inputs.left) rightInput -= 1;
 
-    // Add joystick input (forward on thumbpad moves character forward, backward moves backward)
+    // Add joystick input
     if (Math.abs(this.inputs.joystickY) > 0.1) {
       forwardInput += this.inputs.joystickY;
     }
@@ -1159,68 +1253,50 @@ export class IslandWorld {
 
     const inputMag = Math.hypot(forwardInput, rightInput);
 
-    if (inputMag > 0.05) {
-      // Camera forward & right vectors on XZ plane
-      const camYaw = this.cameraYaw;
-      const camForward = _vec3A.set(Math.sin(camYaw), 0, Math.cos(camYaw)).normalize();
-      const camRight = _vec3B.set(-Math.cos(camYaw), 0, Math.sin(camYaw)).normalize();
+    // Compute camera direction basis on XZ plane
+    const camYaw = this.cameraYaw;
+    const camForward = _vec3A.set(Math.sin(camYaw), 0, Math.cos(camYaw)).normalize();
+    const camRight = _vec3B.set(-Math.cos(camYaw), 0, Math.sin(camYaw)).normalize();
 
-      _vec3Move.set(0, 0, 0);
+    _vec3Move.set(0, 0, 0);
+    if (inputMag > 0.05) {
       _vec3Move.addScaledVector(camForward, forwardInput);
       _vec3Move.addScaledVector(camRight, rightInput);
       _vec3Move.normalize();
-
-      // Lerp-based smoothing for movement direction vector to prevent abrupt direction snaps
-      const smoothingFactor = Math.min(1.0, dt * 16.0);
-      this.smoothedMoveDir.lerp(_vec3Move, smoothingFactor);
-    } else {
-      // Smoothly decay movement direction when input is released
-      const smoothingFactor = Math.min(1.0, dt * 14.0);
-      this.smoothedMoveDir.lerp(_vec3A.set(0, 0, 0), smoothingFactor);
     }
 
-    const smoothedMag = this.smoothedMoveDir.length();
-    if (smoothedMag > 0.01) {
-      // Smooth rotate player facing direction based on smoothed vector
-      const targetAngle = Math.atan2(this.smoothedMoveDir.x, this.smoothedMoveDir.z);
-      this.playerRotation = THREE.MathUtils.damp(this.playerRotation, targetAngle, 16, dt);
+    // Calculate target velocity vector based on input magnitude & max speed
+    const targetSpeed = inputMag > 0.05 ? baseSpeed * Math.min(inputMag, 1.0) : 0;
+    const targetVelocityX = _vec3Move.x * targetSpeed;
+    const targetVelocityZ = _vec3Move.z * targetSpeed;
+
+    // Linear interpolation (lerp) on velocity vector for organic acceleration and deceleration
+    const accelerationRate = inputMag > 0.05 ? 14.0 : 18.0; // Snappier stop, smooth start
+    const lerpFactor = Math.min(1.0, dt * accelerationRate);
+
+    this.playerVelocity.x = THREE.MathUtils.lerp(this.playerVelocity.x, targetVelocityX, lerpFactor);
+    this.playerVelocity.z = THREE.MathUtils.lerp(this.playerVelocity.z, targetVelocityZ, lerpFactor);
+
+    const actualSpeed = Math.hypot(this.playerVelocity.x, this.playerVelocity.z);
+
+    if (actualSpeed > 0.01) {
+      // Smoothly rotate character toward movement velocity heading
+      const targetAngle = Math.atan2(this.playerVelocity.x, this.playerVelocity.z);
+      this.playerRotation = THREE.MathUtils.damp(this.playerRotation, targetAngle, 20, dt);
       this.player.group.rotation.y = this.playerRotation;
 
-      // Apply movement velocity with smoothed direction
-      const currentSpeed = baseSpeed * Math.min(Math.max(inputMag, smoothedMag), 1.0);
-      this.playerPos.x += this.smoothedMoveDir.x * currentSpeed * dt;
-      this.playerPos.z += this.smoothedMoveDir.z * currentSpeed * dt;
-
-      // Footstep sound
-      this.footstepTimer += dt * (isRunning ? 1.5 : 1.0);
-      if (this.footstepTimer > 0.35 && this.isGrounded) {
+      // Footstep sound proportional to speed
+      this.footstepTimer += dt * (actualSpeed > 5.0 ? 1.6 : 1.1);
+      if (this.footstepTimer > 0.32 && this.isGrounded) {
         this.footstepTimer = 0;
         sound.playFootstep();
       }
+    } else {
+      this.playerVelocity.set(0, 0, 0);
     }
 
-    // Island boundary clamp
-    const distFromCenter = Math.hypot(this.playerPos.x, this.playerPos.z);
-    if (distFromCenter > 46) {
-      const angle = Math.atan2(this.playerPos.z, this.playerPos.x);
-      this.playerPos.x = Math.cos(angle) * 46;
-      this.playerPos.z = Math.sin(angle) * 46;
-    }
-
-    // Enforce solid physical collision boundaries with tree trunks, rocks, and ruins
-    const playerRadius = 0.55;
-    for (const obs of this.worldObstacles) {
-      const dx = this.playerPos.x - obs.x;
-      const dz = this.playerPos.z - obs.z;
-      const dist = Math.hypot(dx, dz);
-      const minDist = playerRadius + obs.radius;
-      if (dist < minDist && dist > 0.0001) {
-        const overlap = minDist - dist;
-        this.playerPos.x += (dx / dist) * overlap;
-        this.playerPos.z += (dz / dist) * overlap;
-      }
-    }
-
+    // Apply substepping movement integration & collision resolution (handles corners, walls, anti-tunneling & island bounds)
+    this.collisionSystem.resolveMovementWithSubstepping(this.playerPos, this.playerVelocity, dt, 0.55);
 
     // Update Obstacle System (Moving Platforms, Rotating Hazards, Checkpoints)
     const { carriedDelta } = obstacleSystem.update(dt, time, this.playerPos, this.playerVel, this.isGrounded);
@@ -1234,13 +1310,12 @@ export class IslandWorld {
     networkSync.broadcastState(
       [this.playerPos.x, this.playerPos.y, this.playerPos.z],
       this.playerRotation,
-      smoothedMag > 0.01 ? (isRunning ? 'running' : 'walking') : 'idle',
+      actualSpeed > 0.01 ? (isRunning ? 'running' : 'walking') : 'idle',
       this.questProgress
     );
 
     // Vertical Jump & Gravity
     const groundY = getIslandHeight(this.playerPos.x, this.playerPos.z);
-
 
     if (this.inputs.jump && this.isGrounded) {
       this.playerVel.y = 7.2;
@@ -1276,41 +1351,14 @@ export class IslandWorld {
         sound.playLand();
       }
     } else {
-      // Snug ground alignment
-      this.playerPos.y = THREE.MathUtils.damp(this.playerPos.y, groundY, 20, dt);
+      // Snug ground alignment with higher damping coefficient for silky smooth elevation tracking
+      this.playerPos.y = THREE.MathUtils.damp(this.playerPos.y, groundY, 28, dt);
     }
 
     this.player.group.position.copy(this.playerPos);
 
     // Update procedural model animations
-    this.player.updateAnimation(time, inputMag, !this.isGrounded, isRunning);
-  }
-
-  // --- Camera Orbit Follow System ---
-  private updateCamera(dt: number) {
-    // Target is above player's torso
-    _camTarget.set(this.playerPos.x, this.playerPos.y + 1.4, this.playerPos.z);
-
-    // Calculate desired camera position using spherical coordinates
-    const cy = Math.cos(this.cameraPitch) * this.cameraDistance;
-    const cx = Math.sin(this.cameraYaw) * cy;
-    const cz = Math.cos(this.cameraYaw) * cy;
-    const ch = Math.sin(this.cameraPitch) * this.cameraDistance;
-
-    _camPos.set(_camTarget.x + cx, _camTarget.y + ch, _camTarget.z + cz);
-
-    // Clamp camera above terrain so it never clips under ground
-    const groundBelowCam = getIslandHeight(_camPos.x, _camPos.z) + 0.6;
-    if (_camPos.y < groundBelowCam) {
-      _camPos.y = groundBelowCam;
-    }
-
-    // Exponential damping for silky smooth camera tracking
-    this.camera.position.x = THREE.MathUtils.damp(this.camera.position.x, _camPos.x, 10, dt);
-    this.camera.position.y = THREE.MathUtils.damp(this.camera.position.y, _camPos.y, 10, dt);
-    this.camera.position.z = THREE.MathUtils.damp(this.camera.position.z, _camPos.z, 10, dt);
-
-    this.camera.lookAt(_camTarget);
+    this.player.updateAnimation(time, inputMag, !this.isGrounded, isRunning, isCrouching);
   }
 
   // --- Proximity & Quest Interactions ---
@@ -1567,6 +1615,10 @@ export class IslandWorld {
     }
   }
 
+  public getStealthDetection() {
+    return this.guardAIController.getHighestDetection();
+  }
+
   // --- Reset Game ---
   public resetGame() {
     this.mode = 'playing';
@@ -1574,8 +1626,8 @@ export class IslandWorld {
     this.playerPos.set(-22, 1.0, 24);
     this.playerVel.set(0, 0, 0);
     this.playerRotation = 0;
-    this.cameraPitch = 0.35;
-    this.cameraYaw = 0;
+    this.cameraController.cameraPitch = 0.35;
+    this.cameraController.cameraYaw = 0;
 
     // Reset keys
     this.keys.forEach((k) => {
@@ -1613,10 +1665,11 @@ export class IslandWorld {
       }
     });
 
-    // Reset puzzles, course, survival
+    // Reset puzzles, course, survival, and guards
     puzzleSystem.resetPuzzles();
     obstacleSystem.resetCourse();
     survivalSystem.resetMission();
+    this.guardAIController.resetGuards();
 
     this.questProgress = {
       keysCollected: { sun: false, ocean: false, forest: false },
@@ -1649,20 +1702,55 @@ export class IslandWorld {
     }
   }
 
-  // Mouse & Touch Orbit Controls
+  public setPlayerPosition(x: number, y: number, z: number) {
+    this.playerPos.set(x, y, z);
+    if (this.player) {
+      this.player.group.position.set(x, y, z);
+    }
+  }
+
+  public restoreSavedProgress(savedQuest: QuestProgress, pos: { x: number; y: number; z: number }) {
+    this.questProgress = { ...savedQuest };
+    this.setPlayerPosition(pos.x, pos.y, pos.z);
+
+    if (savedQuest.keysCollected) {
+      const sunKey = this.keys.get('sun');
+      if (sunKey && savedQuest.keysCollected.sun) {
+        sunKey.collected = true;
+        if (sunKey.group.parent) this.scene.remove(sunKey.group);
+      }
+      const oceanKey = this.keys.get('ocean');
+      if (oceanKey && savedQuest.keysCollected.ocean) {
+        oceanKey.collected = true;
+        if (oceanKey.group.parent) this.scene.remove(oceanKey.group);
+      }
+      const forestKey = this.keys.get('forest');
+      if (forestKey && savedQuest.keysCollected.forest) {
+        forestKey.collected = true;
+        if (forestKey.group.parent) this.scene.remove(forestKey.group);
+      }
+    }
+
+    if (savedQuest.altarActivated) {
+      this.altar.setSolved(true);
+    }
+
+    if (savedQuest.gateUnlocked) {
+      this.gate.setUnlocked(true, 1.0);
+    }
+
+    if (this.onQuestUpdate) {
+      this.onQuestUpdate({ ...this.questProgress });
+    }
+  }
+
+  // Mouse & Touch Orbit Controls (Delegated to cameraController)
   public onPointerDrag(deltaX: number, deltaY: number) {
-    const factor = 0.003 * this.mouseSensitivity;
-    this.cameraYaw -= deltaX * factor;
-    const yDir = this.invertY ? -1 : 1;
-    this.cameraPitch = THREE.MathUtils.clamp(
-      this.cameraPitch - deltaY * factor * yDir,
-      0.08,
-      1.3
-    );
+    this.cameraController.onPointerDrag(deltaX, deltaY);
   }
 
   public onZoom(delta: number) {
-    this.cameraDistance = THREE.MathUtils.clamp(this.cameraDistance + delta * 0.005, 3.5, 14.0);
+    this.cameraController.onZoom(delta);
   }
 
   public onResize = () => {
@@ -1677,6 +1765,7 @@ export class IslandWorld {
   public dispose() {
     cancelAnimationFrame(this.animationFrameId);
     window.removeEventListener('resize', this.onResize);
+    this.collisionSystem.clearObstacles();
     this.renderer.dispose();
     if (this.renderer.domElement && this.renderer.domElement.parentNode) {
       this.renderer.domElement.parentNode.removeChild(this.renderer.domElement);

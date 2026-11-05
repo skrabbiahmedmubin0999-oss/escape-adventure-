@@ -41,6 +41,8 @@ interface GameHUDProps {
   onToggleAutoCycle?: () => void;
   onOpenInventory?: () => void;
   onOpenAchievements?: () => void;
+  showFps?: boolean;
+  playerPos?: { x: number; z: number; rotation: number };
 }
 
 export const GameHUD: React.FC<GameHUDProps> = ({
@@ -59,6 +61,8 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   onToggleAutoCycle,
   onOpenInventory,
   onOpenAchievements,
+  showFps,
+  playerPos = { x: -22, z: 24, rotation: 0 },
 }) => {
   const [isQuestDetailsOpen, setIsQuestDetailsOpen] = useState(false);
   const [isEnvPanelOpen, setIsEnvPanelOpen] = useState(false);
@@ -461,6 +465,216 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           <span>Drag to Orbit Camera</span>
         </div>
       </div>
+
+      {/* Top-Down Island Minimap Radar */}
+      <Minimap playerPos={playerPos} quest={quest} />
+
+      {/* Real-time FPS & Frame Time Performance Overlay */}
+      {showFps && <FpsOverlay />}
+    </div>
+  );
+};
+
+interface MinimapProps {
+  playerPos: { x: number; z: number; rotation: number };
+  quest: QuestProgress;
+}
+
+const Minimap: React.FC<MinimapProps> = ({ playerPos, quest }) => {
+  const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  React.useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const size = 128;
+    const center = size / 2;
+    const worldRadius = 48;
+    const scale = 54 / worldRadius; // Maps 48m world radius to 54px canvas radius
+
+    // Clear canvas
+    ctx.clearRect(0, 0, size, size);
+
+    // 1. Ocean Water Outer Ring
+    ctx.fillStyle = '#0284c7'; // Sky blue ocean
+    ctx.beginPath();
+    ctx.arc(center, center, center, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 2. Sand Beach Ring
+    ctx.fillStyle = '#fde047'; // Golden sand
+    ctx.beginPath();
+    ctx.arc(center, center, 52, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 3. Tropical Island Landmass
+    ctx.fillStyle = '#15803d'; // Vibrant island green
+    ctx.beginPath();
+    ctx.arc(center, center, 48, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Inland River / Waterfall Lagoon Detail
+    ctx.fillStyle = '#0369a1';
+    ctx.beginPath();
+    ctx.arc(center + 18 * scale, center + 10 * scale, 6, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Helper: Map World (X, Z) to Canvas (x, y)
+    const toCanvasX = (wx: number) => center + wx * scale;
+    const toCanvasY = (wz: number) => center + wz * scale;
+
+    // 4. Draw Quest Objective Markers
+
+    // A. Sun Key Marker (-18, -18)
+    if (!quest.keysCollected.sun) {
+      const sx = toCanvasX(-18);
+      const sy = toCanvasY(-18);
+      ctx.fillStyle = '#f59e0b'; // Gold / Amber
+      ctx.beginPath();
+      ctx.arc(sx, sy, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // B. Ocean Key Marker (22, 12)
+    if (!quest.keysCollected.ocean) {
+      const ox = toCanvasX(22);
+      const oy = toCanvasY(12);
+      ctx.fillStyle = '#38bdf8'; // Sky Blue
+      ctx.beginPath();
+      ctx.arc(ox, oy, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // C. Forest Key Marker (-12, 28)
+    if (!quest.keysCollected.forest) {
+      const fx = toCanvasX(-12);
+      const fy = toCanvasY(28);
+      ctx.fillStyle = '#34d399'; // Emerald Green
+      ctx.beginPath();
+      ctx.arc(fx, fy, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // D. Central Rune Altar Marker (0, 2)
+    const ax = toCanvasX(0);
+    const ay = toCanvasY(2);
+    ctx.fillStyle = quest.altarActivated ? '#10b981' : quest.keysCount >= 3 ? '#a855f7' : '#94a3b8';
+    ctx.beginPath();
+    ctx.arc(ax, ay, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // E. Grand Gate Escape Portal Marker (0, -30)
+    const gx = toCanvasX(0);
+    const gy = toCanvasY(-30);
+    ctx.fillStyle = quest.gateUnlocked ? '#06b6d4' : '#64748b';
+    ctx.beginPath();
+    ctx.arc(gx, gy, 5, 0, Math.PI * 2);
+    ctx.fill();
+    if (quest.gateUnlocked) {
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    // 5. Draw Player Position & Directional Arrow
+    const px = toCanvasX(playerPos.x);
+    const py = toCanvasY(playerPos.z);
+
+    // Glowing Player Ring
+    ctx.fillStyle = 'rgba(245, 158, 11, 0.35)';
+    ctx.beginPath();
+    ctx.arc(px, py, 8, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Player Direction Arrow
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(playerPos.rotation);
+    ctx.fillStyle = '#f59e0b'; // Amber Player Arrow
+    ctx.beginPath();
+    ctx.moveTo(0, -6);
+    ctx.lineTo(4, 5);
+    ctx.lineTo(0, 3);
+    ctx.lineTo(-4, 5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    // 6. Cardinal Directions (N)
+    ctx.fillStyle = '#f8fafc';
+    ctx.font = '900 9px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('N', center, 10);
+
+  }, [playerPos, quest]);
+
+  return (
+    <div
+      onClick={() => setIsExpanded((prev) => !prev)}
+      className={`fixed top-14 left-2.5 xs:left-3.5 sm:top-16 sm:left-4 z-30 pointer-events-auto cursor-pointer transition-all duration-200 ${
+        isExpanded ? 'scale-125 origin-top-left' : 'hover:scale-105'
+      }`}
+      title="Top-Down Island Radar Minimap (Click to Expand)"
+    >
+      <div className="relative w-20 h-20 sm:w-24 sm:h-24 rounded-full border-2 border-amber-400/80 bg-slate-950/90 shadow-2xl overflow-hidden flex items-center justify-center backdrop-blur-md">
+        <canvas ref={canvasRef} width={128} height={128} className="w-full h-full rounded-full" />
+        <div className="absolute inset-0 rounded-full border border-amber-300/30 pointer-events-none" />
+        <div className="absolute bottom-0.5 inset-x-0 text-center font-mono font-bold text-[8px] text-amber-300 bg-slate-950/80 py-0.5 pointer-events-none">
+          RADAR
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const FpsOverlay: React.FC = () => {
+  const [fpsInfo, setFpsInfo] = React.useState({ fps: 60, frameTime: 16.6 });
+
+  React.useEffect(() => {
+    let frameCount = 0;
+    let lastTime = performance.now();
+    let animId: number;
+
+    const tick = () => {
+      const now = performance.now();
+      frameCount++;
+      const delta = now - lastTime;
+      if (delta >= 500) {
+        const fps = Math.round((frameCount * 1000) / delta);
+        const frameTime = parseFloat((delta / frameCount).toFixed(1));
+        setFpsInfo({ fps, frameTime });
+        frameCount = 0;
+        lastTime = now;
+      }
+      animId = requestAnimationFrame(tick);
+    };
+
+    animId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animId);
+  }, []);
+
+  return (
+    <div className="fixed bottom-3 right-3 bg-slate-950/90 border border-emerald-500/50 rounded-xl px-2.5 py-1.5 font-mono text-[11px] text-emerald-400 font-bold shadow-xl z-50 pointer-events-none flex items-center gap-2">
+      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+      <span>{fpsInfo.fps} FPS</span>
+      <span className="text-slate-500">|</span>
+      <span>{fpsInfo.frameTime} ms</span>
     </div>
   );
 };

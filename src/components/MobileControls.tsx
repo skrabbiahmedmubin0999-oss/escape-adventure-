@@ -1,10 +1,11 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { ArrowUp, Hand, Zap } from 'lucide-react';
+import { ArrowUp, Hand, Zap, EyeOff } from 'lucide-react';
 
 interface MobileControlsProps {
   onJoystickMove: (x: number, y: number) => void;
   onJump: (active: boolean) => void;
   onSprint: (active: boolean) => void;
+  onCrouch?: (active: boolean) => void;
   onInteract: () => void;
   isInteractAvailable: boolean;
   interactLabel?: string;
@@ -14,6 +15,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
   onJoystickMove,
   onJump,
   onSprint,
+  onCrouch,
   onInteract,
   isInteractAvailable,
   interactLabel,
@@ -21,11 +23,35 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
   const stickBaseRef = useRef<HTMLDivElement>(null);
   const [knobPos, setKnobPos] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
-  const touchIdRef = useRef<number | null>(null);
-  const [isSprintLocked, setIsSprintLocked] = useState(false);
+  const [isSprinting, setIsSprinting] = useState(false);
+  const [isCrouching, setIsCrouching] = useState(false);
 
-  // Handle Joystick with Pointer Capture (works for both touch & mouse)
-  const handlePointerDown = (e: React.PointerEvent) => {
+  // Global blur / visibility change listener: reset all inputs on focus loss / tab switch
+  useEffect(() => {
+    const handleResetAllInputs = () => {
+      setIsDragging(false);
+      setKnobPos({ x: 0, y: 0 });
+      setIsSprinting(false);
+      setIsCrouching(false);
+      onJoystickMove(0, 0);
+      onSprint(false);
+      if (onCrouch) onCrouch(false);
+      onJump(false);
+    };
+
+    window.addEventListener('blur', handleResetAllInputs);
+    window.addEventListener('pointercancel', handleResetAllInputs);
+    document.addEventListener('visibilitychange', handleResetAllInputs);
+
+    return () => {
+      window.removeEventListener('blur', handleResetAllInputs);
+      window.removeEventListener('pointercancel', handleResetAllInputs);
+      document.removeEventListener('visibilitychange', handleResetAllInputs);
+    };
+  }, [onJoystickMove, onSprint, onCrouch, onJump]);
+
+  // Handle Joystick with Pointer Capture
+  const handleJoystickDown = (e: React.PointerEvent) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     try {
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -34,12 +60,12 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
     updateKnob(e.clientX, e.clientY);
   };
 
-  const handlePointerMove = (e: React.PointerEvent) => {
+  const handleJoystickMove = (e: React.PointerEvent) => {
     if (!isDragging) return;
     updateKnob(e.clientX, e.clientY);
   };
 
-  const handlePointerUp = (e: React.PointerEvent) => {
+  const handleJoystickUp = (e: React.PointerEvent) => {
     try {
       (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     } catch {}
@@ -73,15 +99,34 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
     onJoystickMove(nx, ny);
   };
 
-  // Toggle sprint for mobile convenience
-  const handleToggleSprint = () => {
-    const next = !isSprintLocked;
-    setIsSprintLocked(next);
-    onSprint(next);
+  // Hold RUN handler
+  const handleSprintStart = (e: React.SyntheticEvent) => {
+    e.preventDefault();
+    setIsSprinting(true);
+    onSprint(true);
+  };
+
+  const handleSprintEnd = (e: React.SyntheticEvent) => {
+    e.preventDefault();
+    setIsSprinting(false);
+    onSprint(false);
+  };
+
+  // Hold CROUCH/HIDE handler
+  const handleCrouchStart = (e: React.SyntheticEvent) => {
+    e.preventDefault();
+    setIsCrouching(true);
+    if (onCrouch) onCrouch(true);
+  };
+
+  const handleCrouchEnd = (e: React.SyntheticEvent) => {
+    e.preventDefault();
+    setIsCrouching(false);
+    if (onCrouch) onCrouch(false);
   };
 
   return (
-    <div className="absolute inset-0 pointer-events-none select-none z-30 overflow-hidden">
+    <div className="absolute inset-0 pointer-events-none select-none z-30 overflow-hidden" style={{ touchAction: 'none' }}>
       {/* Virtual Joystick (Bottom-Left) */}
       <div
         className="absolute pointer-events-auto touch-none"
@@ -92,14 +137,14 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
       >
         <div
           ref={stickBaseRef}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerCancel={handlePointerUp}
-          className="w-28 h-28 sm:w-32 sm:h-32 rounded-full bg-slate-950/70 border-2 border-amber-400/30 relative flex items-center justify-center touch-none shadow-2xl"
+          onPointerDown={handleJoystickDown}
+          onPointerMove={handleJoystickMove}
+          onPointerUp={handleJoystickUp}
+          onPointerCancel={handleJoystickUp}
+          className="w-28 h-28 sm:w-32 sm:h-32 rounded-full bg-slate-950/75 border-2 border-amber-400/40 relative flex items-center justify-center touch-none shadow-2xl"
           style={{ touchAction: 'none' }}
         >
-          {/* Subtle directional cross markings */}
+          {/* Directional cross guide */}
           <div className="absolute w-20 h-20 rounded-full border border-white/10 pointer-events-none" />
           <div className="absolute w-full h-[1px] bg-white/10 pointer-events-none" />
           <div className="absolute h-full w-[1px] bg-white/10 pointer-events-none" />
@@ -123,7 +168,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
         </div>
       </div>
 
-      {/* Action Buttons (Bottom-Right) */}
+      {/* Action Buttons Cluster (Bottom-Right) */}
       <div
         className="absolute pointer-events-auto flex flex-col items-end gap-2.5"
         style={{
@@ -135,7 +180,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
         {isInteractAvailable && (
           <button
             onClick={onInteract}
-            className="group flex items-center gap-2 px-3.5 py-2.5 rounded-full bg-emerald-500 active:bg-emerald-600 text-slate-950 font-black text-xs uppercase tracking-wider shadow-xl border-2 border-emerald-300 active:scale-95 transition-all mb-1 cursor-pointer"
+            className="group flex items-center gap-2 px-4 py-2.5 rounded-full bg-emerald-500 active:bg-emerald-600 text-slate-950 font-black text-xs uppercase tracking-wider shadow-xl border-2 border-emerald-300 active:scale-95 transition-all mb-1 cursor-pointer"
             aria-label="Interact"
           >
             <Hand className="w-5 h-5 text-slate-950" />
@@ -143,24 +188,44 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
           </button>
         )}
 
-        {/* Buttons Cluster: RUN & JUMP */}
-        <div className="flex items-center gap-3">
-          {/* RUN Button (Tap to toggle sprint or hold) */}
+        {/* Action Buttons Cluster: HIDE/CROUCH, RUN & JUMP */}
+        <div className="flex items-center gap-2.5">
+          {/* Hold CROUCH / HIDE Button */}
           <button
-            onTouchStart={(e) => {
-              e.preventDefault();
-              handleToggleSprint();
-            }}
-            onClick={handleToggleSprint}
+            onTouchStart={handleCrouchStart}
+            onTouchEnd={handleCrouchEnd}
+            onTouchCancel={handleCrouchEnd}
+            onMouseDown={handleCrouchStart}
+            onMouseUp={handleCrouchEnd}
+            onMouseLeave={handleCrouchEnd}
             className={`w-12 h-12 sm:w-14 sm:h-14 rounded-full flex flex-col items-center justify-center shadow-lg border active:scale-95 transition-all cursor-pointer ${
-              isSprintLocked
+              isCrouching
+                ? 'bg-sky-400 text-slate-950 border-white shadow-sky-500/40'
+                : 'bg-slate-900/85 text-sky-300 border-sky-400/40 active:bg-sky-600'
+            }`}
+            aria-label="Crouch / Hide"
+          >
+            <EyeOff className={`w-4 h-4 ${isCrouching ? 'stroke-[2.5]' : ''}`} />
+            <span className="text-[9px] font-extrabold uppercase tracking-tight">Hide</span>
+          </button>
+
+          {/* Hold RUN Button */}
+          <button
+            onTouchStart={handleSprintStart}
+            onTouchEnd={handleSprintEnd}
+            onTouchCancel={handleSprintEnd}
+            onMouseDown={handleSprintStart}
+            onMouseUp={handleSprintEnd}
+            onMouseLeave={handleSprintEnd}
+            className={`w-12 h-12 sm:w-14 sm:h-14 rounded-full flex flex-col items-center justify-center shadow-lg border active:scale-95 transition-all cursor-pointer ${
+              isSprinting
                 ? 'bg-amber-400 text-slate-950 border-white shadow-amber-500/40'
                 : 'bg-slate-900/85 text-amber-300 border-amber-400/40 active:bg-amber-600'
             }`}
             aria-label="Run"
           >
-            <Zap className={`w-4 h-4 ${isSprintLocked ? 'fill-slate-950' : ''}`} />
-            <span className="text-[10px] font-extrabold uppercase tracking-tight">Run</span>
+            <Zap className={`w-4 h-4 ${isSprinting ? 'fill-slate-950' : ''}`} />
+            <span className="text-[9px] font-extrabold uppercase tracking-tight">Run</span>
           </button>
 
           {/* JUMP Button */}
@@ -180,10 +245,10 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
             onMouseDown={() => onJump(true)}
             onMouseUp={() => onJump(false)}
             onMouseLeave={() => onJump(false)}
-            className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-gradient-to-tr from-sky-600 to-sky-400 active:from-sky-500 active:to-sky-300 text-white shadow-xl border-2 border-white/50 flex flex-col items-center justify-center active:scale-95 transition-all cursor-pointer"
+            className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-gradient-to-tr from-amber-500 to-amber-300 active:from-amber-400 active:to-amber-200 text-slate-950 shadow-xl border-2 border-white/50 flex flex-col items-center justify-center active:scale-95 transition-all cursor-pointer"
             aria-label="Jump"
           >
-            <ArrowUp className="w-6 h-6 stroke-[2.5]" />
+            <ArrowUp className="w-6 h-6 stroke-[3]" />
             <span className="text-[10px] font-black uppercase tracking-wider -mt-0.5">Jump</span>
           </button>
         </div>

@@ -15,6 +15,7 @@ import { PuzzleModal } from './components/PuzzleModal';
 import { InventoryModal } from './components/InventoryModal';
 import { AchievementsModal } from './components/AchievementsModal';
 import { FailureModal } from './components/FailureModal';
+import { runCollisionTestSuite } from './game/collisionTests';
 
 
 const DEFAULT_SETTINGS: GameSettings = {
@@ -83,6 +84,31 @@ export default function App() {
     cycleProgress: 0.3,
   });
 
+  const [playerPos, setPlayerPos] = useState({ x: -22, z: 24, rotation: 0 });
+
+  useEffect(() => {
+    let animId: number;
+    const updatePlayerPos = () => {
+      if (worldRef.current && mode === 'playing') {
+        const p = worldRef.current.playerPos;
+        const rot = worldRef.current.playerRotation;
+        setPlayerPos((prev) => {
+          if (
+            Math.abs(prev.x - p.x) > 0.1 ||
+            Math.abs(prev.z - p.z) > 0.1 ||
+            Math.abs(prev.rotation - rot) > 0.05
+          ) {
+            return { x: p.x, z: p.z, rotation: rot };
+          }
+          return prev;
+        });
+      }
+      animId = requestAnimationFrame(updatePlayerPos);
+    };
+    animId = requestAnimationFrame(updatePlayerPos);
+    return () => cancelAnimationFrame(animId);
+  }, [mode]);
+
   // Modals & Expansion UI
   const [showMultiplayer, setShowMultiplayer] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -104,6 +130,36 @@ export default function App() {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 4500);
   }, []);
+
+  const saveGameProgress = useCallback(() => {
+    const currentPos = worldRef.current
+      ? {
+          x: parseFloat(worldRef.current.playerPos.x.toFixed(2)),
+          y: parseFloat(worldRef.current.playerPos.y.toFixed(2)),
+          z: parseFloat(worldRef.current.playerPos.z.toFixed(2)),
+        }
+      : { x: -22, y: 1.0, z: 24 };
+
+    const currentQuest = worldRef.current ? worldRef.current.questProgress : quest;
+
+    const saveData = {
+      quest: currentQuest,
+      playerPos: currentPos,
+      savedAt: Date.now(),
+    };
+
+    try {
+      localStorage.setItem('escape_adventure_saved_game', JSON.stringify(saveData));
+      addToast({
+        type: 'checkpoint',
+        title: 'Progress Saved',
+        message: `Saved at (${currentPos.x}, ${currentPos.z}) with ${currentQuest.keysCount}/3 keys!`,
+      });
+      sound.playLand();
+    } catch (err) {
+      console.error('Failed to save progress to localStorage', err);
+    }
+  }, [quest, addToast]);
 
 
   // Settings & Profile (Stored in localStorage)
@@ -157,6 +213,12 @@ export default function App() {
     world.setPlayerCustomization(customization.tunicColor, customization.hatColor);
     sound.setVolumes(settings.sfxVolume, settings.musicVolume, !settings.soundEnabled);
     sound.startAmbient();
+
+    // Run automated physics & collision test suite
+    const physicsTestResults = runCollisionTestSuite();
+    console.log('[Physics Collision Test Suite Results]', physicsTestResults);
+    (window as any).__runPhysicsTests = runCollisionTestSuite;
+    (window as any).__togglePhysicsWireframes = () => worldRef.current?.togglePhysicsWireframes();
 
     const unlockUserAudio = () => {
       sound.unlockAudio();
@@ -286,6 +348,7 @@ export default function App() {
       if (code === 'KeyA' || code === 'ArrowLeft') worldRef.current.inputs.left = true;
       if (code === 'KeyD' || code === 'ArrowRight') worldRef.current.inputs.right = true;
       if (code === 'ShiftLeft' || code === 'ShiftRight') worldRef.current.inputs.sprint = true;
+      if (code === 'KeyC' || code === 'ControlLeft' || code === 'ControlRight') worldRef.current.inputs.crouch = true;
       if (code === 'Space') {
         e.preventDefault();
         worldRef.current.inputs.jump = true;
@@ -302,6 +365,9 @@ export default function App() {
       if (code === 'KeyM') {
         toggleMute();
       }
+      if (code === 'KeyP') {
+        worldRef.current.togglePhysicsWireframes();
+      }
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -312,6 +378,7 @@ export default function App() {
       if (code === 'KeyA' || code === 'ArrowLeft') worldRef.current.inputs.left = false;
       if (code === 'KeyD' || code === 'ArrowRight') worldRef.current.inputs.right = false;
       if (code === 'ShiftLeft' || code === 'ShiftRight') worldRef.current.inputs.sprint = false;
+      if (code === 'KeyC' || code === 'ControlLeft' || code === 'ControlRight') worldRef.current.inputs.crouch = false;
       if (code === 'Space') worldRef.current.inputs.jump = false;
     };
 
@@ -323,6 +390,7 @@ export default function App() {
         worldRef.current.inputs.left = false;
         worldRef.current.inputs.right = false;
         worldRef.current.inputs.sprint = false;
+        worldRef.current.inputs.crouch = false;
         worldRef.current.inputs.jump = false;
         worldRef.current.inputs.joystickX = 0;
         worldRef.current.inputs.joystickY = 0;
@@ -367,13 +435,33 @@ export default function App() {
   };
 
   // Actions
-  const handleStartGame = (withCompanion = false) => {
+  const handleStartGame = (withCompanion = false, loadSave = true) => {
     isTutorialDismissedRef.current = false;
     setTutorialNotice(null);
     if (worldRef.current) {
       worldRef.current.resetGame();
       worldRef.current.mode = 'playing';
       worldRef.current.setCompanionVisible(withCompanion);
+
+      if (loadSave) {
+        try {
+          const savedStr = localStorage.getItem('escape_adventure_saved_game');
+          if (savedStr) {
+            const savedData = JSON.parse(savedStr);
+            if (savedData.quest && savedData.playerPos) {
+              worldRef.current.restoreSavedProgress(savedData.quest, savedData.playerPos);
+              setQuest(savedData.quest);
+              addToast({
+                type: 'checkpoint',
+                title: 'Checkpoint Loaded',
+                message: `Loaded saved progress at (${savedData.playerPos.x}, ${savedData.playerPos.z})!`,
+              });
+            }
+          }
+        } catch (err) {
+          console.error('Failed to load saved progress', err);
+        }
+      }
     }
     setMode('playing');
     setShowMultiplayer(false);
@@ -452,6 +540,8 @@ export default function App() {
             }}
             onOpenInventory={() => setShowInventory(true)}
             onOpenAchievements={() => setShowAchievements(true)}
+            showFps={settings.showFps}
+            playerPos={playerPos}
           />
 
           {/* Toast Notification Popups */}
@@ -470,6 +560,9 @@ export default function App() {
             }}
             onSprint={(active) => {
               if (worldRef.current) worldRef.current.inputs.sprint = active;
+            }}
+            onCrouch={(active) => {
+              if (worldRef.current) worldRef.current.inputs.crouch = active;
             }}
             onInteract={() => {
               if (worldRef.current) worldRef.current.handleInteract();
@@ -569,6 +662,7 @@ export default function App() {
           onClose={() => setShowSettings(false)}
           settings={settings}
           onUpdateSettings={(newVals) => setSettings((prev) => ({ ...prev, ...newVals }))}
+          onSaveProgress={mode === 'playing' ? saveGameProgress : undefined}
         />
       )}
 
