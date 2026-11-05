@@ -22,6 +22,9 @@ import {
   Wind,
   Trophy,
   Briefcase,
+  Heart,
+  Activity,
+  Crosshair,
 } from 'lucide-react';
 import { QuestProgress, EnvironmentState, TimeOfDay, WeatherType } from '../game/types';
 
@@ -43,6 +46,16 @@ interface GameHUDProps {
   onOpenAchievements?: () => void;
   showFps?: boolean;
   playerPos?: { x: number; z: number; rotation: number };
+  stealthLevel?: number;
+  stealthState?: 'patrol' | 'suspicious' | 'investigate' | 'chase' | 'search' | 'disabled';
+  stoneCooldownRemaining?: number;
+  onStartMission?: () => void;
+  onThrowStone?: () => void;
+  // Phase 7 Combat
+  playerHealth?: number;
+  maxPlayerHealth?: number;
+  ammoCount?: number;
+  maxAmmo?: number;
 }
 
 export const GameHUD: React.FC<GameHUDProps> = ({
@@ -63,9 +76,32 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   onOpenAchievements,
   showFps,
   playerPos = { x: -22, z: 24, rotation: 0 },
+  stealthLevel = 0,
+  stealthState = 'patrol',
+  stoneCooldownRemaining = 0,
+  onStartMission,
+  onThrowStone,
+  playerHealth = 100,
+  maxPlayerHealth = 100,
+  ammoCount = 0,
+  maxAmmo = 0,
 }) => {
   const [isQuestDetailsOpen, setIsQuestDetailsOpen] = useState(false);
   const [isEnvPanelOpen, setIsEnvPanelOpen] = useState(false);
+
+  // Keyboard shortcut listener to start expedition when briefing is active
+  React.useEffect(() => {
+    if (quest.missionPhase !== 'orient') return;
+    const handleKey = (e: KeyboardEvent) => {
+      if (['INPUT', 'SELECT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
+      if (e.code === 'Space' || e.code === 'Enter' || e.code === 'KeyE') {
+        e.preventDefault();
+        onStartMission?.();
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [quest.missionPhase, onStartMission]);
 
   // Format elapsed time (mm:ss)
   const minutes = Math.floor(quest.timeElapsed / 60);
@@ -76,14 +112,112 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   let currentObjective = `Find Keys (${quest.keysCount}/3)`;
   if (quest.gateUnlocked) {
     currentObjective = 'Portal Open! Step In';
+  } else if (quest.gateOpening) {
+    currentObjective = 'Portal Opening...';
   } else if (quest.altarActivated) {
-    currentObjective = 'Opening Portal...';
+    currentObjective = 'Escape via Grand Gate';
   } else if (quest.keysCount >= 3) {
     currentObjective = 'Activate Rune Altar';
   }
 
   return (
     <div className="absolute inset-0 pointer-events-none select-none z-20 overflow-hidden font-sans">
+      {/* ======================================================== */}
+      {/* 0. MISSION ORIENTATION / BRIEFING OVERLAY (Phased)       */}
+      {/* ======================================================== */}
+      {quest.missionPhase === 'orient' && (
+        <div className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm pointer-events-auto flex items-center justify-center p-4 z-[100] animate-in fade-in duration-300">
+          <div className="bg-slate-900 border-2 border-amber-500/60 rounded-3xl p-4 sm:p-5 max-w-sm w-full shadow-2xl text-center space-y-4 transform animate-in zoom-in-95 duration-200">
+            <div className="w-16 h-16 mx-auto rounded-full bg-amber-500/20 flex items-center justify-center border-2 border-amber-500/40">
+              <Compass className="w-8 h-8 text-amber-400" />
+            </div>
+            
+            <div className="space-y-1">
+              <h2 className="text-xl font-black text-white uppercase tracking-tighter italic">Mission Briefing</h2>
+              <div className="h-1 w-16 bg-amber-500 mx-auto rounded-full" />
+            </div>
+
+            <div className="space-y-3 text-left">
+              <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-800 space-y-2">
+                <p className="text-slate-300 text-xs font-medium leading-relaxed">
+                  Infiltrate the island and recover the <span className="text-amber-400 font-bold">3 Elemental Keys</span> hidden in the Temple, Grotto, and Grove.
+                </p>
+                <p className="text-slate-300 text-xs font-medium leading-relaxed">
+                  Once collected, activate the <span className="text-amber-400 font-bold">Grand Rune Altar</span> in the plaza to open the Grand Escape Portal.
+                </p>
+                <p className="text-slate-400 text-[10px] italic">
+                  Avoid guard patrols. Use high ground and crouch in tall grass to remain hidden.
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={() => onStartMission?.()}
+              className="w-full py-3 bg-gradient-to-r from-amber-500 to-amber-400 text-slate-950 font-black text-sm uppercase tracking-wider rounded-xl shadow-xl hover:scale-[1.02] active:scale-95 transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5"
+            >
+              <span>Start Expedition</span>
+              <span className="text-[9px] font-bold text-amber-950/80 normal-case">(Press Space or Tap to Begin)</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* 0.4 ESCAPE PHASE ACTIVE HERO BANNER                     */}
+      {/* ======================================================== */}
+      {quest.missionPhase === 'escape' && (
+        <div className="absolute top-16 sm:top-20 left-1/2 -translate-x-1/2 z-40 pointer-events-none animate-in slide-in-from-top-4 duration-300">
+          <div className="bg-gradient-to-r from-cyan-600/90 via-sky-500/95 to-cyan-600/90 border-2 border-white px-4 py-2 sm:px-6 sm:py-2.5 rounded-full shadow-2xl flex items-center gap-2.5 text-white">
+            <Sparkles className="w-4 h-4 text-amber-300 animate-spin" />
+            <span className="text-xs sm:text-sm font-black tracking-wider uppercase animate-pulse">
+              ★ PORTAL UNLOCKED: RACE TO THE GRAND GATE! ★
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* 0.5 STEALTH DETECTION METER                              */}
+      {/* ======================================================== */}
+      {quest.missionPhase !== 'orient' && (
+        <div className="absolute top-24 sm:top-28 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5 transition-opacity duration-300">
+          <div className={`relative w-48 sm:w-56 h-2 sm:h-2.5 bg-slate-950/85 rounded-full border shadow-lg overflow-hidden transition-all ${
+            stealthState === 'chase' ? 'border-red-500 shadow-red-500/50' : 'border-slate-800'
+          }`}>
+             <div 
+               className={`absolute inset-y-0 left-0 transition-all duration-200 ${
+                 stealthState === 'chase' ? 'bg-red-500 shadow-[0_0_12px_rgba(239,68,68,0.8)]' : 
+                 stealthState === 'investigate' || stealthState === 'search' ? 'bg-amber-500' :
+                 stealthLevel > 50 ? 'bg-amber-400' : 'bg-emerald-400'
+               }`}
+               style={{ width: `${Math.max(stealthLevel, stealthState === 'chase' ? 100 : 0)}%` }}
+             />
+          </div>
+          <div className="flex items-center gap-1.5 px-2.5 py-0.5 bg-slate-950/75 rounded-full border border-slate-800/60 text-[10px] font-black uppercase tracking-tighter">
+            <span className={stealthState === 'chase' ? 'text-red-400 font-extrabold animate-pulse' : 'text-slate-400'}>
+              {stealthState === 'chase' ? 'ALERT' : 'Visibility'}
+            </span>
+            <span className="text-slate-600">|</span>
+            <span className={`
+              ${stealthState === 'patrol' ? 'text-emerald-400' : ''}
+              ${stealthState === 'suspicious' ? 'text-amber-300' : ''}
+              ${stealthState === 'investigate' || stealthState === 'search' ? 'text-amber-500' : ''}
+              ${stealthState === 'chase' ? 'text-red-500 animate-pulse font-black' : ''}
+              ${stealthState === 'disabled' ? 'text-sky-400' : ''}
+            `}>
+              {stealthState === 'patrol' ? 'Hidden' : stealthState.toUpperCase()}
+            </span>
+            {stoneCooldownRemaining > 0 && (
+              <>
+                <span className="text-slate-600">|</span>
+                <span className="text-amber-400/80 font-mono text-[9px]">
+                  Stone: {stoneCooldownRemaining.toFixed(1)}s
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+      )}
       {/* ======================================================== */}
       {/* 1. TOP BAR: Compact, Non-Overlapping, Fully Responsive   */}
       {/* ======================================================== */}
@@ -184,8 +318,46 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             )}
           </div>
 
-          {/* Center: Always-Visible 3 Elemental Key Badges & Treasure Stats */}
-          <div className="flex items-center gap-1 sm:gap-2">
+          {/* Center: Phase 7 Combat Status & Mission Progress */}
+          <div className="flex flex-col items-center gap-1.5 sm:gap-2 mx-auto">
+            {/* Top Row: Vitals (Health & Ammo) */}
+            <div className="flex items-center gap-3 sm:gap-6 bg-slate-950/90 border border-slate-700/60 px-3 sm:px-5 py-1 sm:py-1.5 rounded-full shadow-2xl backdrop-blur-md">
+              {/* Player Health Bar */}
+              <div className="flex items-center gap-2">
+                <Heart 
+                  className={`w-3.5 h-3.5 sm:w-4 h-4 ${playerHealth < 30 ? 'text-red-500 animate-pulse' : 'text-red-400'}`} 
+                  fill={playerHealth < 30 ? 'none' : 'currentColor'} 
+                />
+                <div className="w-16 sm:w-28 h-1.5 sm:h-2 bg-slate-900 rounded-full border border-white/5 overflow-hidden relative shadow-inner">
+                  <div 
+                    className={`h-full transition-all duration-500 ease-out ${
+                      playerHealth < 30 ? 'bg-gradient-to-r from-red-600 to-red-400 shadow-[0_0_8px_rgba(239,68,68,0.4)]' : 'bg-gradient-to-r from-emerald-500 to-red-500'
+                    }`}
+                    style={{ width: `${Math.max(0, Math.min(100, (playerHealth / maxPlayerHealth) * 100))}%` }} 
+                  />
+                </div>
+                <span className="text-[10px] sm:text-xs font-black text-slate-100 tabular-nums min-w-[20px]">
+                  {Math.ceil(playerHealth)}
+                </span>
+              </div>
+
+              {/* Firearm Ammunition (Authorized Missions Only) */}
+              {quest.firearmAuthorized && (
+                <div className="flex items-center gap-2 border-l border-white/10 pl-3 sm:pl-6">
+                  <Crosshair className="w-3.5 h-3.5 sm:w-4 h-4 text-amber-400" />
+                  <div className="flex items-end gap-0.5">
+                    <span className="text-xs sm:text-sm font-black text-amber-400 tabular-nums leading-none">
+                      {ammoCount}
+                    </span>
+                    <span className="text-[9px] sm:text-[10px] font-bold text-slate-500 leading-none mb-0.5">
+                      / {maxAmmo}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-1 sm:gap-2">
             <div className="flex items-center gap-1 sm:gap-1.5 bg-slate-950/80 border border-slate-800/80 rounded-xl px-1.5 py-1 sm:px-2.5 sm:py-1.5 shadow-lg">
               {/* Sun Key */}
               <div
@@ -241,6 +413,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 <Package className="w-3.5 h-3.5 text-amber-400" />
                 <span className="font-mono">{quest.chestsOpened}/{quest.totalChests}</span>
               </div>
+            </div>
             </div>
           </div>
 

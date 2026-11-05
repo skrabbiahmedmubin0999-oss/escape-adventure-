@@ -13,7 +13,6 @@ export class CameraController {
   public invertY: boolean = false;
 
   private currentLookTarget: THREE.Vector3 = new THREE.Vector3();
-  private isInitialized: boolean = false;
 
   public onPointerDrag(deltaX: number, deltaY: number) {
     const factor = 0.003 * this.mouseSensitivity;
@@ -47,7 +46,6 @@ export class CameraController {
       const camZ = Math.cos(time * orbitSpeed) * orbitRadius;
       camera.position.set(camX, 20 + Math.sin(time * 0.2) * 3, camZ);
       camera.lookAt(0, 4, 0);
-      this.isInitialized = false;
       return;
     }
 
@@ -60,7 +58,6 @@ export class CameraController {
         playerPos.z + Math.cos(vicAngle) * 7
       );
       camera.lookAt(playerPos.x, playerPos.y + 1.2, playerPos.z);
-      this.isInitialized = false;
       return;
     }
 
@@ -68,10 +65,6 @@ export class CameraController {
       // Target is at player's torso level (1.4m height)
       _camTarget.set(playerPos.x, playerPos.y + 1.4, playerPos.z);
 
-      if (!this.isInitialized) {
-        this.currentLookTarget.copy(_camTarget);
-        this.isInitialized = true;
-      }
 
       // Calculate desired camera position using spherical coordinates
       const cy = Math.cos(this.cameraPitch) * this.cameraDistance;

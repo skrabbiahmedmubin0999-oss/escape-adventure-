@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { KeyType } from './types';
+import { Materials } from './materials';
 
 /**
  * Heightmap function for the island
@@ -86,14 +87,18 @@ export interface AdventurerCharacter {
   leftLeg: THREE.Group;
   rightLeg: THREE.Group;
   backpack: THREE.Group;
+  swordGroup?: THREE.Group;
   updateAnimation: (
     time: number,
     speed: number,
     isJumping: boolean,
     isRunning: boolean,
-    isCrouching?: boolean
+    isCrouching?: boolean,
+    combatState?: 'idle' | 'attack' | 'parry' | 'dodge' | 'hit',
+    combatProgress?: number
   ) => void;
   setOutfitColor: (tunicColor: string, hatColor: string) => void;
+  setSwordVisible?: (visible: boolean) => void;
 }
 
 export function createAdventurerModel(initialTunic = '#e67e22', initialHat = '#8e44ad'): AdventurerCharacter {
@@ -255,6 +260,44 @@ export function createAdventurerModel(initialTunic = '#e67e22', initialHat = '#8
   const rightArm = createArm(false);
   torso.add(leftArm, rightArm);
 
+  // Sword on Right Arm
+  const swordGroup = new THREE.Group();
+  const bladeMat = new THREE.MeshStandardMaterial({
+    color: 0xe2e8f0,
+    metalness: 0.9,
+    roughness: 0.15,
+  });
+  const goldGuardMat = new THREE.MeshStandardMaterial({
+    color: 0xf59e0b,
+    metalness: 0.8,
+    roughness: 0.25,
+  });
+  const gripMat = new THREE.MeshStandardMaterial({
+    color: 0x451a03,
+    roughness: 0.6,
+  });
+
+  const bladeMesh = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.68, 0.015), bladeMat);
+  bladeMesh.position.y = 0.34;
+  bladeMesh.castShadow = true;
+  swordGroup.add(bladeMesh);
+
+  const guardMesh = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.035, 0.04), goldGuardMat);
+  guardMesh.position.y = 0.01;
+  swordGroup.add(guardMesh);
+
+  const gripMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.024, 0.14, 6), gripMat);
+  gripMesh.position.y = -0.07;
+  swordGroup.add(gripMesh);
+
+  const pommelMesh = new THREE.Mesh(new THREE.SphereGeometry(0.032, 6, 6), goldGuardMat);
+  pommelMesh.position.y = -0.15;
+  swordGroup.add(pommelMesh);
+
+  swordGroup.position.set(0, -0.34, 0.08);
+  swordGroup.rotation.x = Math.PI * 0.35;
+  rightArm.add(swordGroup);
+
   // Legs (Left & Right articulated groups)
   function createLeg(isLeft: boolean) {
     const legGroup = new THREE.Group();
@@ -289,8 +332,75 @@ export function createAdventurerModel(initialTunic = '#e67e22', initialHat = '#8
     speed: number,
     isJumping: boolean,
     isRunning: boolean,
-    isCrouching: boolean = false
+    isCrouching: boolean = false,
+    combatState: 'idle' | 'attack' | 'parry' | 'dodge' | 'hit' = 'idle',
+    combatProgress: number = 0
   ) => {
+    // 1. Combat State Animations
+    if (combatState === 'attack') {
+      const p = THREE.MathUtils.clamp(combatProgress, 0, 1);
+      if (p < 0.25) {
+        // Windup: pull arm back and raise blade
+        const t = p / 0.25;
+        rightArm.rotation.x = THREE.MathUtils.lerp(0, -1.6, t);
+        rightArm.rotation.y = THREE.MathUtils.lerp(0, 0.7, t);
+        rightArm.rotation.z = THREE.MathUtils.lerp(0, 0.3, t);
+        leftArm.rotation.x = THREE.MathUtils.lerp(0, -0.6, t);
+        torso.rotation.y = THREE.MathUtils.lerp(0, -0.3, t);
+      } else if (p < 0.65) {
+        // Active slash strike: sweep forward-downward arc
+        const t = (p - 0.25) / 0.4;
+        rightArm.rotation.x = THREE.MathUtils.lerp(-1.6, 0.9, t);
+        rightArm.rotation.y = THREE.MathUtils.lerp(0.7, -0.6, t);
+        rightArm.rotation.z = THREE.MathUtils.lerp(0.3, -0.4, t);
+        leftArm.rotation.x = THREE.MathUtils.lerp(-0.6, 0.4, t);
+        torso.rotation.y = THREE.MathUtils.lerp(-0.3, 0.4, t);
+      } else {
+        // Recovery: return to neutral
+        const t = (p - 0.65) / 0.35;
+        rightArm.rotation.x = THREE.MathUtils.lerp(0.9, 0, t);
+        rightArm.rotation.y = THREE.MathUtils.lerp(-0.6, 0, t);
+        rightArm.rotation.z = THREE.MathUtils.lerp(-0.4, 0, t);
+        leftArm.rotation.x = THREE.MathUtils.lerp(0.4, 0, t);
+        torso.rotation.y = THREE.MathUtils.lerp(0.4, 0, t);
+      }
+      return;
+    }
+
+    if (combatState === 'parry') {
+      // Guard stance: blade raised horizontally protecting chest
+      rightArm.rotation.x = -1.4;
+      rightArm.rotation.y = -0.7;
+      rightArm.rotation.z = 0.5;
+      leftArm.rotation.x = -1.1;
+      leftArm.rotation.y = 0.5;
+      torso.rotation.y = -0.15;
+      torso.position.y = 1.0;
+      return;
+    }
+
+    if (combatState === 'dodge') {
+      // Nimble evasive tuck / roll
+      torso.position.y = 0.65;
+      torso.rotation.x = 0.5;
+      rightArm.rotation.x = -1.2;
+      leftArm.rotation.x = -1.2;
+      leftLeg.rotation.x = -0.7;
+      rightLeg.rotation.x = 0.7;
+      return;
+    }
+
+    if (combatState === 'hit') {
+      // Flinch from impact
+      torso.rotation.x = -0.3;
+      torso.position.y = 1.0;
+      head.rotation.x = -0.35;
+      rightArm.rotation.x = 0.5;
+      leftArm.rotation.x = 0.5;
+      return;
+    }
+
+    // 2. Standard Locomotion Animations
     const runMultiplier = isRunning ? 1.6 : 1.0;
     const walkFrequency = speed > 0.05 ? 10 * Math.max(0.4, speed) * runMultiplier : 2;
 
@@ -354,8 +464,12 @@ export function createAdventurerModel(initialTunic = '#e67e22', initialHat = '#8
     leftLeg,
     rightLeg,
     backpack,
+    swordGroup,
     updateAnimation,
     setOutfitColor,
+    setSwordVisible: (visible: boolean) => {
+      swordGroup.visible = visible;
+    },
   };
 }
 
@@ -947,7 +1061,7 @@ export function createEscapeGate(): {
 /**
  * Sun Temple Ruins atop the North-East Hill
  */
-export function createSunTempleRuins(): THREE.Group {
+export function createSunTempleRuins(detailLevel = 0): THREE.Group {
   const ruins = new THREE.Group();
   ruins.name = 'SunTempleRuins';
 
@@ -956,6 +1070,20 @@ export function createSunTempleRuins(): THREE.Group {
     roughness: 0.8,
     metalness: 0.1,
   });
+
+  if (detailLevel === 2) {
+    // LOW: Simple block and central pedestal
+    const platformGeo = new THREE.BoxGeometry(10, 0.8, 10);
+    const platform = new THREE.Mesh(platformGeo, stoneMat);
+    platform.position.y = 0.4;
+    ruins.add(platform);
+
+    const altarGeo = new THREE.CylinderGeometry(0.8, 1.0, 1.2, 4);
+    const altar = new THREE.Mesh(altarGeo, stoneMat);
+    altar.position.set(0, 1.2, 0);
+    ruins.add(altar);
+    return ruins;
+  }
 
   // Raised stone terrace
   const platformGeo = new THREE.BoxGeometry(10, 0.8, 10);
@@ -971,13 +1099,13 @@ export function createSunTempleRuins(): THREE.Group {
   ];
   colPositions.forEach(([cx, cz], idx) => {
     const colHeight = idx === 1 ? 2.5 : 4.5; // Broken column effect
-    const colGeo = new THREE.CylinderGeometry(0.45, 0.5, colHeight, 8);
+    const colGeo = new THREE.CylinderGeometry(0.45, 0.5, colHeight, detailLevel === 0 ? 8 : 4);
     const col = new THREE.Mesh(colGeo, stoneMat);
     col.position.set(cx, 0.8 + colHeight / 2, cz);
-    col.castShadow = true;
+    col.castShadow = detailLevel === 0;
     ruins.add(col);
 
-    if (idx !== 1) {
+    if (idx !== 1 && detailLevel === 0) {
       // Capital on top
       const capGeo = new THREE.BoxGeometry(1.2, 0.35, 1.2);
       const cap = new THREE.Mesh(capGeo, stoneMat);
@@ -988,13 +1116,36 @@ export function createSunTempleRuins(): THREE.Group {
   });
 
   // Central Sun Altar Pedestal
-  const altarGeo = new THREE.CylinderGeometry(0.8, 1.0, 1.2, 8);
+  const altarGeo = new THREE.CylinderGeometry(0.8, 1.0, 1.2, detailLevel === 0 ? 8 : 6);
   const altar = new THREE.Mesh(altarGeo, stoneMat);
   altar.position.set(0, 1.2, 0);
-  altar.castShadow = true;
+  altar.castShadow = detailLevel === 0;
   ruins.add(altar);
 
+  // Add Natural Ruin Debris as stealth cover
+  const debrisPositions = [
+    [-2.5, 2.5, 0.4], [2.5, -2.5, 0.6], [3.5, 3.5, 0.5], [-3.5, -3.5, 0.7]
+  ];
+  
+  debrisPositions.forEach(([dx, dz, rot]) => {
+    const debrisGeo = new THREE.BoxGeometry(1.2, 0.8, 1.2);
+    const debris = new THREE.Mesh(debrisGeo, stoneMat);
+    debris.position.set(dx, 0.4, dz);
+    debris.rotation.y = rot;
+    debris.castShadow = detailLevel === 0;
+    debris.receiveShadow = detailLevel < 2;
+    ruins.add(debris);
+  });
+
   return ruins;
+}
+
+export function createSunTempleRuinsLOD(): THREE.LOD {
+  const lod = new THREE.LOD();
+  lod.addLevel(createSunTempleRuins(0), 0);
+  lod.addLevel(createSunTempleRuins(1), 45);
+  lod.addLevel(createSunTempleRuins(2), 90);
+  return lod;
 }
 
 /**
@@ -2113,21 +2264,12 @@ export function createCobblestoneCanvasTexture(): THREE.CanvasTexture {
 /**
  * Real-world Stone Cottage with Wall Thickness, Windows, Timber Roof, and Usable Doorway
  */
-export function createStoneCottage(width = 6.0, height = 3.5, depth = 5.0): THREE.Group {
+export function createStoneCottage(width = 6.0, height = 3.5, depth = 5.0, detailLevel = 0): THREE.Group {
   const building = new THREE.Group();
   building.name = 'StoneCottage';
 
-  const wallMat = new THREE.MeshStandardMaterial({
-    color: 0x94a3b8, // Slate stone
-    roughness: 0.85,
-    metalness: 0.1,
-  });
-
-  const timberMat = new THREE.MeshStandardMaterial({
-    color: 0x78350f, // Dark timber wood
-    roughness: 0.75,
-    metalness: 0.05,
-  });
+  const wallMat = Materials.stone;
+  const timberMat = Materials.wood;
 
   const roofMat = new THREE.MeshStandardMaterial({
     color: 0xb91c1c, // Terracotta roof tiles
@@ -2135,119 +2277,127 @@ export function createStoneCottage(width = 6.0, height = 3.5, depth = 5.0): THRE
     metalness: 0.1,
   });
 
-  const glassMat = new THREE.MeshPhysicalMaterial({
-    color: 0xbae6fd,
-    transmission: 0.85,
-    roughness: 0.1,
-    ior: 1.5,
-    thickness: 0.2,
-    transparent: true,
-    opacity: 0.9,
-  });
-
   // Base stone foundation slab
   const foundGeo = new THREE.BoxGeometry(width + 0.4, 0.4, depth + 0.4);
   const found = new THREE.Mesh(foundGeo, wallMat);
   found.position.y = 0.2;
-  found.receiveShadow = true;
+  found.receiveShadow = detailLevel < 2;
   building.add(found);
 
-  // Outer Walls with Doorway Opening
   const wallThick = 0.35;
   const h = height;
 
+  if (detailLevel === 2) {
+    // LOW Detail: Simple block representation
+    const blockGeo = new THREE.BoxGeometry(width, h, depth);
+    const block = new THREE.Mesh(blockGeo, wallMat);
+    block.position.y = h * 0.5 + 0.4;
+    building.add(block);
+
+    const roofGeo = new THREE.ConeGeometry(Math.hypot(width, depth) * 0.5, 2.0, 4);
+    roofGeo.rotateY(Math.PI * 0.25);
+    const roof = new THREE.Mesh(roofGeo, roofMat);
+    roof.position.y = h + 1.2;
+    building.add(roof);
+    return building;
+  }
+
+  // MEDIUM/HIGH Detail: Individual walls
   // Back Wall (solid)
   const backWallGeo = new THREE.BoxGeometry(width, h, wallThick);
   const backWall = new THREE.Mesh(backWallGeo, wallMat);
   backWall.position.set(0, h * 0.5 + 0.4, -depth * 0.5 + wallThick * 0.5);
-  backWall.castShadow = true;
+  backWall.castShadow = detailLevel === 0;
   backWall.receiveShadow = true;
   building.add(backWall);
 
-  // Left Wall (solid)
-  const leftWallGeo = new THREE.BoxGeometry(wallThick, h, depth - wallThick * 2);
-  const leftWall = new THREE.Mesh(leftWallGeo, wallMat);
+  // Left/Right Walls
+  const sideWallGeo = new THREE.BoxGeometry(wallThick, h, depth - wallThick * 2);
+  const leftWall = new THREE.Mesh(sideWallGeo, wallMat);
   leftWall.position.set(-width * 0.5 + wallThick * 0.5, h * 0.5 + 0.4, 0);
-  leftWall.castShadow = true;
-  leftWall.receiveShadow = true;
+  leftWall.castShadow = detailLevel === 0;
   building.add(leftWall);
 
-  // Right Wall (with Window cutout)
-  const rightWallGeo = new THREE.BoxGeometry(wallThick, h, depth - wallThick * 2);
-  const rightWall = new THREE.Mesh(rightWallGeo, wallMat);
+  const rightWall = new THREE.Mesh(sideWallGeo, wallMat);
   rightWall.position.set(width * 0.5 - wallThick * 0.5, h * 0.5 + 0.4, 0);
-  rightWall.castShadow = true;
-  rightWall.receiveShadow = true;
+  rightWall.castShadow = detailLevel === 0;
   building.add(rightWall);
 
-  // Front Wall (Split around 1.4m wide Usable Doorway at center)
+  // Front Wall (Simplified for MEDIUM)
   const doorWidth = 1.4;
   const sideWallWidth = (width - doorWidth) * 0.5;
 
-  const frontWallLGeo = new THREE.BoxGeometry(sideWallWidth, h, wallThick);
-  const frontWallL = new THREE.Mesh(frontWallLGeo, wallMat);
-  frontWallL.position.set(-width * 0.5 + sideWallWidth * 0.5, h * 0.5 + 0.4, depth * 0.5 - wallThick * 0.5);
-  frontWallL.castShadow = true;
-  building.add(frontWallL);
+  if (detailLevel === 1) {
+    const frontWallGeo = new THREE.BoxGeometry(width, h, wallThick);
+    const frontWall = new THREE.Mesh(frontWallGeo, wallMat);
+    frontWall.position.set(0, h * 0.5 + 0.4, depth * 0.5 - wallThick * 0.5);
+    building.add(frontWall);
+  } else {
+    // HIGH: Split wall for doorway
+    const frontWallLGeo = new THREE.BoxGeometry(sideWallWidth, h, wallThick);
+    const frontWallL = new THREE.Mesh(frontWallLGeo, wallMat);
+    frontWallL.position.set(-width * 0.5 + sideWallWidth * 0.5, h * 0.5 + 0.4, depth * 0.5 - wallThick * 0.5);
+    frontWallL.castShadow = true;
+    building.add(frontWallL);
 
-  const frontWallRGeo = new THREE.BoxGeometry(sideWallWidth, h, wallThick);
-  const frontWallR = new THREE.Mesh(frontWallRGeo, wallMat);
-  frontWallR.position.set(width * 0.5 - sideWallWidth * 0.5, h * 0.5 + 0.4, depth * 0.5 - wallThick * 0.5);
-  frontWallR.castShadow = true;
-  building.add(frontWallR);
+    const frontWallRGeo = new THREE.BoxGeometry(sideWallWidth, h, wallThick);
+    const frontWallR = new THREE.Mesh(frontWallRGeo, wallMat);
+    frontWallR.position.set(width * 0.5 - sideWallWidth * 0.5, h * 0.5 + 0.4, depth * 0.5 - wallThick * 0.5);
+    frontWallR.castShadow = true;
+    building.add(frontWallR);
+  }
 
-  // Lintel / Header over doorway
-  const lintelGeo = new THREE.BoxGeometry(doorWidth + 0.2, 0.8, wallThick + 0.05);
-  const lintel = new THREE.Mesh(lintelGeo, timberMat);
-  lintel.position.set(0, h + 0.0, depth * 0.5 - wallThick * 0.5);
-  lintel.castShadow = true;
-  building.add(lintel);
-
-  // Recessed Open Wooden Door
-  const doorPanelGeo = new THREE.BoxGeometry(0.08, 2.3, 1.25);
-  const doorPanel = new THREE.Mesh(doorPanelGeo, timberMat);
-  doorPanel.position.set(-doorWidth * 0.45, 1.55, depth * 0.5 - wallThick * 0.5 - 0.5);
-  doorPanel.rotation.y = Math.PI * 0.35; // Ajar open into room
-  doorPanel.castShadow = true;
-  building.add(doorPanel);
-
-  // Timber Roof Gable & Overhang
-  const roofGableGeo = new THREE.ConeGeometry(Math.hypot(width, depth) * 0.42, 2.2, 4);
+  // Roof
+  const roofGableGeo = new THREE.ConeGeometry(Math.hypot(width, depth) * 0.42, 2.2, detailLevel === 0 ? 4 : 4);
   roofGableGeo.rotateY(Math.PI * 0.25);
   const roof = new THREE.Mesh(roofGableGeo, roofMat);
   roof.position.set(0, h + 1.5, 0);
   roof.scale.set(1.15, 1.0, 1.15);
-  roof.castShadow = true;
+  roof.castShadow = detailLevel === 0;
   building.add(roof);
 
-  // Glass Window with Timber Frame on Front Right Wall
-  const winFrameGeo = new THREE.BoxGeometry(0.9, 1.1, 0.15);
-  const winFrame = new THREE.Mesh(winFrameGeo, timberMat);
-  winFrame.position.set(width * 0.25, 2.1, depth * 0.5 - 0.05);
-  building.add(winFrame);
-
-  const winGlassGeo = new THREE.PlaneGeometry(0.7, 0.9);
-  const winGlass = new THREE.Mesh(winGlassGeo, glassMat);
-  winGlass.position.set(width * 0.25, 2.1, depth * 0.5 + 0.02);
-  building.add(winGlass);
-
-  // Warm indoor lantern glowing through window & doorway
-  const indoorLight = new THREE.PointLight(0xf59e0b, 1.2, 8);
-  indoorLight.position.set(0, 2.2, 0);
-  building.add(indoorLight);
+  if (detailLevel === 0) {
+    // HIGH detail extra flourishes (windows, lights)
+    const indoorLight = new THREE.PointLight(0xf59e0b, 1.2, 8);
+    indoorLight.position.set(0, 2.2, 0);
+    building.add(indoorLight);
+  }
 
   return building;
+}
+
+export function createStoneCottageLOD(width = 6.0, height = 3.5, depth = 5.0): THREE.LOD {
+  const lod = new THREE.LOD();
+  lod.addLevel(createStoneCottage(width, height, depth, 0), 0);
+  lod.addLevel(createStoneCottage(width, height, depth, 1), 35);
+  lod.addLevel(createStoneCottage(width, height, depth, 2), 65);
+  return lod;
 }
 
 /**
  * Guard Watchtower with Deck, Ladder, & Torch Lantern
  */
-export function createWatchtower(): THREE.Group {
+export function createWatchtower(detailLevel = 0): THREE.Group {
   const tower = new THREE.Group();
   tower.name = 'GuardWatchtower';
 
   const woodMat = new THREE.MeshStandardMaterial({ color: 0x5c3d2e, roughness: 0.8 });
   const roofMat = new THREE.MeshStandardMaterial({ color: 0x3f2a1d, roughness: 0.9 });
+
+  if (detailLevel === 2) {
+    // LOW: Simple tower block
+    const baseGeo = new THREE.BoxGeometry(2.8, 6, 2.8);
+    const base = new THREE.Mesh(baseGeo, woodMat);
+    base.position.y = 3;
+    tower.add(base);
+
+    const roofGeo = new THREE.ConeGeometry(3, 2, 4);
+    roofGeo.rotateY(Math.PI * 0.25);
+    const roof = new THREE.Mesh(roofGeo, roofMat);
+    roof.position.y = 7;
+    tower.add(roof);
+    return tower;
+  }
 
   // 4 Thick Corner Posts
   const postPositions = [
@@ -2255,55 +2405,49 @@ export function createWatchtower(): THREE.Group {
     [-1.4, 1.4], [1.4, 1.4],
   ];
   postPositions.forEach(([px, pz]) => {
-    const postGeo = new THREE.CylinderGeometry(0.18, 0.24, 6.2, 6);
+    const postGeo = new THREE.CylinderGeometry(0.18, 0.24, 6.2, detailLevel === 0 ? 6 : 4);
     const post = new THREE.Mesh(postGeo, woodMat);
     post.position.set(px, 3.1, pz);
-    post.castShadow = true;
+    post.castShadow = detailLevel === 0;
     tower.add(post);
   });
-
-  // Cross Bracing Timber Beams
-  const braceGeo = new THREE.CylinderGeometry(0.1, 0.1, 3.8, 6);
-  const brace1 = new THREE.Mesh(braceGeo, woodMat);
-  brace1.position.set(0, 2.2, 1.4);
-  brace1.rotation.z = Math.PI * 0.25;
-  tower.add(brace1);
 
   // Guard Deck Platform
   const deckGeo = new THREE.BoxGeometry(3.6, 0.25, 3.6);
   const deck = new THREE.Mesh(deckGeo, woodMat);
   deck.position.set(0, 4.5, 0);
-  deck.castShadow = true;
+  deck.castShadow = detailLevel === 0;
   tower.add(deck);
-
-  // Safety Railings around deck
-  const railGeo = new THREE.BoxGeometry(3.6, 0.1, 0.1);
-  const railF = new THREE.Mesh(railGeo, woodMat);
-  railF.position.set(0, 5.3, 1.7);
-  const railB = new THREE.Mesh(railGeo, woodMat);
-  railB.position.set(0, 5.3, -1.7);
-  tower.add(railF, railB);
 
   // Roof Canopy
   const roofGeo = new THREE.ConeGeometry(2.8, 1.6, 4);
   roofGeo.rotateY(Math.PI * 0.25);
   const roof = new THREE.Mesh(roofGeo, roofMat);
   roof.position.set(0, 6.8, 0);
-  roof.castShadow = true;
+  roof.castShadow = detailLevel === 0;
   tower.add(roof);
 
-  // Guard Torch / Lantern on deck
-  const torchLight = new THREE.PointLight(0xff7700, 1.5, 12);
-  torchLight.position.set(0, 5.2, 0);
-  tower.add(torchLight);
+  if (detailLevel === 0) {
+    const torchLight = new THREE.PointLight(0xff7700, 1.5, 12);
+    torchLight.position.set(0, 5.2, 0);
+    tower.add(torchLight);
+  }
 
   return tower;
+}
+
+export function createWatchtowerLOD(): THREE.LOD {
+  const lod = new THREE.LOD();
+  lod.addLevel(createWatchtower(0), 0);
+  lod.addLevel(createWatchtower(1), 40);
+  lod.addLevel(createWatchtower(2), 80);
+  return lod;
 }
 
 /**
  * Merchant Wooden Supply Wagon
  */
-export function createSupplyWagon(): THREE.Group {
+export function createSupplyWagon(detailLevel = 0): THREE.Group {
   const wagon = new THREE.Group();
   wagon.name = 'SupplyWagon';
 
@@ -2311,44 +2455,59 @@ export function createSupplyWagon(): THREE.Group {
   const ironMat = new THREE.MeshStandardMaterial({ color: 0x334155, metalness: 0.8, roughness: 0.3 });
   const canvasMat = new THREE.MeshStandardMaterial({ color: 0xfef08a, roughness: 0.9 });
 
+  if (detailLevel === 2) {
+    // LOW: Simple bed and cover box
+    const bedGeo = new THREE.BoxGeometry(1.8, 0.7, 3.2);
+    const bed = new THREE.Mesh(bedGeo, woodMat);
+    bed.position.y = 1.0;
+    wagon.add(bed);
+
+    const coverGeo = new THREE.BoxGeometry(1.8, 0.95, 3.2);
+    const cover = new THREE.Mesh(coverGeo, canvasMat);
+    cover.position.set(0, 1.825, 0);
+    wagon.add(cover);
+    return wagon;
+  }
+
   // Main Wagon Bed Box
   const bedGeo = new THREE.BoxGeometry(1.8, 0.7, 3.2);
   const bed = new THREE.Mesh(bedGeo, woodMat);
   bed.position.y = 1.0;
-  bed.castShadow = true;
+  bed.castShadow = detailLevel === 0;
   wagon.add(bed);
 
   // Arched Canvas Cover
-  const coverGeo = new THREE.CylinderGeometry(0.95, 0.95, 3.2, 12, 1, false, 0, Math.PI);
+  const coverGeo = new THREE.CylinderGeometry(0.95, 0.95, 3.2, detailLevel === 0 ? 12 : 6, 1, false, 0, Math.PI);
   coverGeo.rotateZ(Math.PI * 0.5);
   coverGeo.rotateY(Math.PI * 0.5);
   const cover = new THREE.Mesh(coverGeo, canvasMat);
   cover.position.set(0, 1.35, 0);
-  cover.castShadow = true;
+  cover.castShadow = detailLevel === 0;
   wagon.add(cover);
 
-  // 4 Spoked Wheels
+  // Wheels
   const wheelPositions = [
     [-1.0, 0.55, -1.1], [1.0, 0.55, -1.1],
     [-1.0, 0.55, 1.1], [1.0, 0.55, 1.1],
   ];
   wheelPositions.forEach(([wx, wy, wz]) => {
-    const wheelGeo = new THREE.CylinderGeometry(0.55, 0.55, 0.12, 12);
+    const wheelGeo = new THREE.CylinderGeometry(0.55, 0.55, 0.12, detailLevel === 0 ? 12 : 6);
     wheelGeo.rotateZ(Math.PI * 0.5);
     const wheel = new THREE.Mesh(wheelGeo, ironMat);
     wheel.position.set(wx, wy, wz);
-    wheel.castShadow = true;
+    wheel.castShadow = detailLevel === 0;
     wagon.add(wheel);
   });
 
-  // Front Hitch Bar
-  const hitchGeo = new THREE.CylinderGeometry(0.06, 0.06, 1.8, 6);
-  const hitch = new THREE.Mesh(hitchGeo, woodMat);
-  hitch.rotation.x = Math.PI * 0.5;
-  hitch.position.set(0, 0.4, 2.4);
-  wagon.add(hitch);
-
   return wagon;
+}
+
+export function createSupplyWagonLOD(): THREE.LOD {
+  const lod = new THREE.LOD();
+  lod.addLevel(createSupplyWagon(0), 0);
+  lod.addLevel(createSupplyWagon(1), 30);
+  lod.addLevel(createSupplyWagon(2), 60);
+  return lod;
 }
 
 /**

@@ -25,9 +25,18 @@ export interface PatrolGuard {
   detectionLevel: number; // 0 to 100
   lastKnownPlayerPos: THREE.Vector3;
   searchTimer: number;
+  investigateTimer: number;
   disabledTimer: number;
   statusCanvasMesh?: THREE.Mesh;
   canvasTexture?: THREE.CanvasTexture;
+  // Combat properties
+  health: number; // 100 max
+  maxHealth: number;
+  attackCooldown: number;
+  telegraphTimer: number;
+  isTelegraphing: boolean;
+  isStaggered: boolean;
+  staggerTimer: number;
 }
 
 const _vec3A = new THREE.Vector3();
@@ -38,6 +47,13 @@ const _companionVel = new THREE.Vector3();
 export class GuardAIController {
   private guards: PatrolGuard[] = [];
   public onPlayerCaught?: (guardName: string) => void;
+  public onPlayerSpotted?: (guardName: string) => void;
+  public onGuardStrike?: (guard: PatrolGuard) => void;
+  
+  // Alert encounter debouncing: ensures simultaneous multi-guard alerts
+  // and rapid chase/search flickers count as a single cohesive detection encounter.
+  private isAlertEncounterActive: boolean = false;
+  private alertCooldownTimer: number = 0;
 
   /**
    * Initializes 3 Patrol Guards stationed at key tactical island zones
@@ -110,13 +126,26 @@ export class GuardAIController {
         detectionLevel: 0,
         lastKnownPlayerPos: startPos.clone(),
         searchTimer: 0,
+        investigateTimer: 0,
         disabledTimer: 0,
         statusCanvasMesh: statusMesh,
+        health: 100,
+        maxHealth: 100,
+        attackCooldown: 1.0,
+        telegraphTimer: 0,
+        isTelegraphing: false,
+        isStaggered: false,
+        staggerTimer: 0,
       });
     });
   }
 
   private createStatusIndicatorMesh(): THREE.Mesh {
+    if (typeof document === 'undefined') {
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.8), new THREE.MeshBasicMaterial());
+      mesh.visible = false;
+      return mesh;
+    }
     const canvas = document.createElement('canvas');
     canvas.width = 128;
     canvas.height = 128;
@@ -135,7 +164,7 @@ export class GuardAIController {
   }
 
   private updateStatusIndicator(guard: PatrolGuard) {
-    if (!guard.statusCanvasMesh) return;
+    if (!guard.statusCanvasMesh || typeof document === 'undefined') return;
 
     if (guard.state === 'patrol' || guard.state === 'disabled') {
       guard.statusCanvasMesh.visible = false;
@@ -243,7 +272,15 @@ export class GuardAIController {
 
         if (guard.detectionLevel >= 100 && guard.state !== 'chase') {
           guard.state = 'chase';
-          sound.playAltarActivate(); // Alert sound cue
+          // Check if this is the start of a new Alert Encounter
+          if (!this.isAlertEncounterActive) {
+            this.isAlertEncounterActive = true;
+            this.alertCooldownTimer = 4.0;
+            sound.playAltarActivate(); // Alert sound cue
+            if (this.onPlayerSpotted) {
+              this.onPlayerSpotted(guard.name);
+            }
+          }
         }
       } else {
         // Decay detection when out of vision
@@ -271,18 +308,58 @@ export class GuardAIController {
       } else if (guard.state === 'suspicious' || guard.state === 'investigate') {
         targetPos = guard.lastKnownPlayerPos;
         moveSpeed = 3.5;
-        if (guard.position.distanceTo(targetPos) < 1.5 && !hasLineOfSight) {
+        guard.investigateTimer -= dt;
+        // Transition to search if reached investigate spot, or if safety timeout expired
+        if ((guard.position.distanceTo(targetPos) < 1.5 || guard.investigateTimer <= 0) && !hasLineOfSight) {
           guard.state = 'search';
           guard.searchTimer = 4.0;
         }
       } else if (guard.state === 'chase') {
         targetPos = playerPos;
-        moveSpeed = 6.2; // Sprint chase speed!
+        // Combat engagement when within melee range (<= 2.0m)
+        if (guard.isStaggered) {
+          moveSpeed = 0;
+          guard.staggerTimer -= dt;
+          guard.character.updateAnimation(time, 0, false, false, false, 'hit', 0);
+          if (guard.staggerTimer <= 0) {
+            guard.isStaggered = false;
+          }
+        } else if (guard.isTelegraphing) {
+          moveSpeed = 0; // Plant feet during windup
+          guard.telegraphTimer -= dt;
+          // Face player directly during attack windup
+          _vec3A.subVectors(playerPos, guard.position);
+          _vec3A.y = 0;
+          if (_vec3A.lengthSq() > 0.01) {
+            guard.rotation = Math.atan2(_vec3A.x, _vec3A.z);
+          }
+          const telegraphProgress = THREE.MathUtils.clamp(1.0 - guard.telegraphTimer / 0.6, 0, 1);
+          guard.character.updateAnimation(time, 0, false, false, false, 'attack', telegraphProgress * 0.4);
 
-        // Caught trigger check
-        if (distToPlayer < 1.35) {
-          if (this.onPlayerCaught) {
-            this.onPlayerCaught(guard.name);
+          if (guard.telegraphTimer <= 0) {
+            guard.isTelegraphing = false;
+            guard.attackCooldown = 1.6; // Cooldown before next strike
+            guard.character.updateAnimation(time, 0, false, false, false, 'attack', 0.8);
+            if (this.onGuardStrike && distToPlayer < 2.4) {
+              this.onGuardStrike(guard);
+            }
+          }
+        } else {
+          guard.attackCooldown -= dt;
+          if (distToPlayer <= 2.0) {
+            moveSpeed = 0; // In melee range
+            _vec3A.subVectors(playerPos, guard.position);
+            _vec3A.y = 0;
+            if (_vec3A.lengthSq() > 0.01) {
+              guard.rotation = Math.atan2(_vec3A.x, _vec3A.z);
+            }
+            if (guard.attackCooldown <= 0) {
+              // Initiate 0.6s attack telegraph
+              guard.isTelegraphing = true;
+              guard.telegraphTimer = 0.6;
+            }
+          } else {
+            moveSpeed = 5.8; // Sprint chase speed towards player
           }
         }
       } else if (guard.state === 'search') {
@@ -324,6 +401,20 @@ export class GuardAIController {
 
       this.updateStatusIndicator(guard);
     });
+
+    // Update global alert encounter lifecycle:
+    // If any guard is in active 'chase', the encounter remains hot with a 4.0s escape buffer.
+    // If all guards lose chase, the cooldown counts down until the encounter ends ('Escaped!').
+    const anyGuardChasing = this.guards.some((g) => g.state === 'chase');
+    if (anyGuardChasing) {
+      this.isAlertEncounterActive = true;
+      this.alertCooldownTimer = 4.0;
+    } else if (this.isAlertEncounterActive) {
+      this.alertCooldownTimer -= dt;
+      if (this.alertCooldownTimer <= 0) {
+        this.isAlertEncounterActive = false; // Player broke contact and eluded pursuit!
+      }
+    }
   }
 
   /**
@@ -366,9 +457,21 @@ export class GuardAIController {
     let maxLevel = 0;
     let worstState: GuardAIState = 'patrol';
 
+    const statePriority: Record<GuardAIState, number> = {
+      disabled: 0,
+      patrol: 1,
+      'return-to-patrol': 1,
+      search: 2,
+      suspicious: 3,
+      investigate: 4,
+      chase: 5,
+    };
+
     this.guards.forEach((g) => {
       if (g.detectionLevel > maxLevel) {
         maxLevel = g.detectionLevel;
+      }
+      if (statePriority[g.state] > statePriority[worstState]) {
         worstState = g.state;
       }
     });
@@ -408,6 +511,8 @@ export class GuardAIController {
   }
 
   public resetGuards() {
+    this.isAlertEncounterActive = false;
+    this.alertCooldownTimer = 0;
     this.guards.forEach((g) => {
       g.currentWaypointIdx = 0;
       const startWp = g.waypoints[0].clone();
@@ -419,7 +524,57 @@ export class GuardAIController {
       g.detectionLevel = 0;
       g.disabledTimer = 0;
       g.searchTimer = 0;
+      g.investigateTimer = 0;
+      g.health = 100;
+      g.maxHealth = 100;
+      g.attackCooldown = 1.0;
+      g.telegraphTimer = 0;
+      g.isTelegraphing = false;
+      g.isStaggered = false;
+      g.staggerTimer = 0;
       this.updateStatusIndicator(g);
+    });
+  }
+
+  /**
+   * Applies damage to a guard, staggering or incapacitating them
+   * Returns true if the guard is defeated
+   */
+  public damageGuard(guard: PatrolGuard, amount: number): boolean {
+    guard.health = Math.max(0, guard.health - amount);
+    guard.isTelegraphing = false;
+    guard.isStaggered = true;
+    guard.staggerTimer = 0.7;
+    if (guard.health <= 0) {
+      guard.state = 'disabled';
+      guard.disabledTimer = 60.0; // Incapacitated for 60s
+      return true; // Neutralized
+    }
+    return false;
+  }
+
+  public isAlertActive(): boolean {
+    return this.isAlertEncounterActive;
+  }
+
+  public getGuards(): PatrolGuard[] {
+    return this.guards;
+  }
+
+  /**
+   * Triggers a noise distraction that makes nearby guards investigate.
+   */
+  public triggerNoiseDistraction(pos: THREE.Vector3, radius: number) {
+    this.guards.forEach((guard) => {
+      if (guard.state === 'patrol' || guard.state === 'suspicious' || guard.state === 'search' || guard.state === 'return-to-patrol') {
+        const dist = guard.position.distanceTo(pos);
+        if (dist < radius) {
+          guard.state = 'investigate';
+          guard.lastKnownPlayerPos.copy(pos);
+          guard.investigateTimer = 6.0; // 6s safety timeout prevents getting stuck
+          guard.searchTimer = 3.0; // Wait at noise source for 3s
+        }
+      }
     });
   }
 

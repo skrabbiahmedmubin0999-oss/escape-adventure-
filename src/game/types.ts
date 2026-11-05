@@ -109,6 +109,20 @@ export interface QuestProgress {
   totalCheckpoints: number;
   survivalTimeRemaining: number;
   survivalActive: boolean;
+  caughtCount: number;
+  missionPhase: 'orient' | 'execute' | 'escape' | 'resolve';
+  sessionSeed: number;
+  stoneCooldown: number;
+  // Phase 7 Hybrid Combat features
+  currentMissionId?: string;
+  firearmAuthorized: boolean;
+  ammoCount: number;
+  maxAmmo: number;
+  playerHealth: number;
+  maxPlayerHealth: number;
+  attackCooldown: number;
+  dodgeCooldown: number;
+  isParrying: boolean;
 }
 
 // Puzzles
@@ -192,5 +206,12 @@ export interface NetworkSyncPayload {
   chestUpdate?: { chestId: string; opened: boolean };
   checkpointUpdate?: { checkpointId: string };
   timestamp: number;
+}
+
+declare global {
+  interface Window {
+    __togglePhysicsWireframes: () => boolean;
+    __runPhysicsTests: () => any;
+  }
 }
 

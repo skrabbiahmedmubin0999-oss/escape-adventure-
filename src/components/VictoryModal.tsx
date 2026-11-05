@@ -9,7 +9,10 @@ interface VictoryModalProps {
   chestsOpened: number;
   totalChests: number;
   xpEarned: number;
+  caughtCount: number;
+  sessionSeed?: number;
   onPlayAgain: () => void;
+  onReplaySameSeed?: () => void;
   onReturnToMenu: () => void;
 }
 
@@ -20,7 +23,10 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({
   chestsOpened,
   totalChests,
   xpEarned,
+  caughtCount,
+  sessionSeed,
   onPlayAgain,
+  onReplaySameSeed,
   onReturnToMenu,
 }) => {
   const minutes = Math.floor(timeElapsed / 60);
@@ -29,8 +35,11 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({
 
   const isNewRecord = bestTime !== null && (bestTime === timeElapsed || timeElapsed <= bestTime);
 
-  // Rating based on speed
-  const stars = timeElapsed < 120 ? 3 : timeElapsed < 240 ? 2 : 1;
+  // Rating based on speed and stealth
+  const stealthBonus = Math.max(0, 100 - caughtCount * 25);
+  const timeRating = timeElapsed < 120 ? 3 : timeElapsed < 240 ? 2 : 1;
+  const stealthRating = caughtCount === 0 ? 3 : caughtCount < 3 ? 2 : 1;
+  const stars = Math.ceil((timeRating + stealthRating) / 2);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 bg-slate-950/85 backdrop-blur-none font-sans overflow-y-auto">
@@ -48,18 +57,25 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({
             You conquered the ancient puzzles of the island
           </p>
 
-          {/* Star Rating */}
-          <div className="flex justify-center gap-1.5 my-3">
-            {[1, 2, 3].map((s) => (
-              <Star
-                key={s}
-                className={`w-7 h-7 ${
-                  s <= stars
-                    ? 'text-amber-400 fill-amber-400 filter drop-shadow'
-                    : 'text-slate-700'
-                }`}
-              />
-            ))}
+          {/* Star Rating & Seed Badge */}
+          <div className="flex flex-col items-center gap-1.5 my-2.5">
+            <div className="flex justify-center gap-1.5">
+              {[1, 2, 3].map((s) => (
+                <Star
+                  key={s}
+                  className={`w-7 h-7 ${
+                    s <= stars
+                      ? 'text-amber-400 fill-amber-400 filter drop-shadow'
+                      : 'text-slate-700'
+                  }`}
+                />
+              ))}
+            </div>
+            {sessionSeed && (
+              <span className="text-[10px] font-mono text-slate-400 bg-slate-950/60 px-2 py-0.5 rounded-full border border-slate-800">
+                Expedition Seed: #{sessionSeed}
+              </span>
+            )}
           </div>
         </div>
 
@@ -110,24 +126,26 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({
             <div className="bg-slate-950 p-3 rounded-2xl border border-sky-500/30">
               <Package className="w-4 h-4 text-sky-400 mx-auto mb-0.5" />
               <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
-                Chests & XP
+                Stealth & XP
               </div>
               <div className="text-lg sm:text-xl font-black font-mono text-sky-300 mt-0.5">
-                {chestsOpened}/{totalChests}
+                {caughtCount === 0 ? 'Ghost' : `${caughtCount} Spots`}
               </div>
               <div className="text-[10px] text-emerald-400 mt-0.5 font-semibold">
-                +{xpEarned} Adventure XP
+                +{stealthBonus} Stealth XP
               </div>
             </div>
           </div>
 
           <div className="text-xs text-slate-400 bg-slate-950/40 p-3 rounded-xl border border-slate-800">
-            Congratulations! The ancient portal has returned you safely home. Ready for another expedition?
+            {caughtCount === 0
+              ? 'Flawless Shadow! You escaped without alerting a single guard.'
+              : `Mission accomplished with ${caughtCount} guard alerts triggered. Practice to earn the Ghost title!`}
           </div>
         </div>
 
         {/* Action Buttons */}
-        <div className="p-6 pt-0 space-y-2.5">
+        <div className="p-6 pt-0 space-y-2">
           <button
             onClick={() => {
               sound.playClick();
@@ -136,15 +154,28 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({
             className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 font-black text-sm uppercase tracking-wider shadow-xl flex items-center justify-center gap-2 transition-all cursor-pointer"
           >
             <RotateCcw className="w-4 h-4" />
-            <span>Play Again</span>
+            <span>New Expedition</span>
           </button>
+
+          {onReplaySameSeed && (
+            <button
+              onClick={() => {
+                sound.playClick();
+                onReplaySameSeed();
+              }}
+              className="w-full py-2.5 rounded-2xl bg-slate-800/90 hover:bg-slate-700/90 text-amber-300 font-bold text-xs uppercase tracking-wider border border-amber-500/30 transition-colors flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
+              <span>Retry Same Seed (Mastery)</span>
+            </button>
+          )}
 
           <button
             onClick={() => {
               sound.playClick();
               onReturnToMenu();
             }}
-            className="w-full py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs uppercase tracking-wider transition-colors flex items-center justify-center gap-2 cursor-pointer"
+            className="w-full py-2.5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs uppercase tracking-wider transition-colors flex items-center justify-center gap-2 cursor-pointer"
           >
             <Home className="w-4 h-4" />
             <span>Main Menu</span>

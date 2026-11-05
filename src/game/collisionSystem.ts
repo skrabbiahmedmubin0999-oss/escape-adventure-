@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { getIslandHeight } from './proceduralAssets';
 
+export const ISLAND_PLAYABLE_RADIUS = 46.0;
+
 export enum CollisionLayer {
   STATIC_WORLD = 1 << 0, // 1: Trees, Rocks, Ruins, Terrain
   PLAYER       = 1 << 1, // 2: Player character
@@ -289,7 +291,7 @@ export class CollisionSystem {
       }
 
       // Island landmass boundary clamp
-      this.clampIslandBounds(pos, 46);
+      this.clampIslandBounds(pos, ISLAND_PLAYABLE_RADIUS);
     }
   }
 
@@ -302,9 +304,9 @@ export class CollisionSystem {
   }
 
   /**
-   * Clamps character within the island landmass boundary (46m radius)
+   * Clamps character within the island landmass boundary (ISLAND_PLAYABLE_RADIUS)
    */
-  public clampIslandBounds(playerPos: THREE.Vector3, maxRadius: number = 46) {
+  public clampIslandBounds(playerPos: THREE.Vector3, maxRadius: number = ISLAND_PLAYABLE_RADIUS) {
     const distFromCenter = Math.hypot(playerPos.x, playerPos.z);
     if (distFromCenter > maxRadius) {
       const angle = Math.atan2(playerPos.z, playerPos.x);
@@ -358,3 +360,28 @@ export class CollisionSystem {
 }
 
 export const collisionSystem = new CollisionSystem();
+
+/**
+ * Clamps stone throw coordinates to valid playable island bounds (<= ISLAND_PLAYABLE_RADIUS)
+ * and guarantees landing occurs on dry ground above water (y >= 0.35m).
+ */
+export function clampStoneLandingLocation(target: THREE.Vector3): void {
+  const islandDist = Math.hypot(target.x, target.z);
+  if (islandDist > ISLAND_PLAYABLE_RADIUS) {
+    target.multiplyScalar(ISLAND_PLAYABLE_RADIUS / islandDist);
+  }
+
+  // Ensure landing elevation is on dry ground above water level (sea level is 0.0)
+  let groundY = getIslandHeight(target.x, target.z);
+  if (groundY < 0.35) {
+    // Pull inward towards island center until on valid dry ground
+    const currentDist = Math.hypot(target.x, target.z);
+    for (let r = currentDist; r >= 10.0; r -= 1.0) {
+      target.multiplyScalar((r - 1.0) / r);
+      groundY = getIslandHeight(target.x, target.z);
+      if (groundY >= 0.35) break;
+    }
+  }
+  target.y = Math.max(0.35, groundY);
+}
+

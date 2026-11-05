@@ -269,6 +269,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <button
               onClick={() => {
                 sound.playClick();
+                if (typeof window.__togglePhysicsWireframes === 'function') {
+                  const isVisible = window.__togglePhysicsWireframes();
+                  // No specific local state needed if we rely on global state or return value,
+                  // but for UI status we can toggle a local state if we want.
+                  // Since we don't have a way to query current state without toggling, 
+                  // the button itself acts as a toggle.
+                } else {
+                  console.error('Physics Wireframe toggle not available');
+                  // Since SettingsModal doesn't have addToast, we'll just log
+                  alert('Physics Wireframes control not available in this build.');
+                }
+              }}
+              className="w-full py-2.5 px-4 rounded-xl bg-slate-950 hover:bg-slate-800 text-sky-400 hover:text-sky-300 font-bold text-xs border border-sky-500/40 flex items-center justify-center gap-2 transition-all shadow cursor-pointer active:scale-98"
+            >
+              <Activity className="w-4 h-4 text-sky-400" />
+              <span>Toggle Physics Wireframes</span>
+            </button>
+
+            <button
+              onClick={() => {
+                sound.playClick();
                 if (typeof (window as any).__runPhysicsTests === 'function') {
                   const results = (window as any).__runPhysicsTests();
                   setAuditResults(results);

@@ -1,8 +1,49 @@
-/**
- * ESCAPE Level & Asset Manifest
- * Describes the environment layout, real-world scaling, stealth cover objects,
- * playable routes, and solid object collision shapes.
- */
+export interface MissionConfig {
+  id: string;
+  title: string;
+  description: string;
+  allowFirearms: boolean; // Strict locked rule: Default false; only explicitly authorized missions set to true
+  startingAmmo: number;
+  maxAmmo: number;
+  firearmNoiseRadius: number;
+}
+
+export const MISSION_CONFIGS: Record<string, MissionConfig> = {
+  mission_shadow_escape: {
+    id: 'mission_shadow_escape',
+    title: 'Shadow Island Infiltration',
+    description: 'Infiltrate the island unseen. Recover the 3 Elemental Keys and escape through the Northern Portal. Stealth & blade only.',
+    allowFirearms: false,
+    startingAmmo: 0,
+    maxAmmo: 0,
+    firearmNoiseRadius: 0,
+  },
+  mission_sunken_garrison: {
+    id: 'mission_sunken_garrison',
+    title: 'Sunken Garrison Siege',
+    description: 'High-threat tactical strike operation. Limited flintlock firearm authorized (4 rounds). Gunshots create loud 24m noise alerting sentries.',
+    allowFirearms: true,
+    startingAmmo: 4,
+    maxAmmo: 4,
+    firearmNoiseRadius: 24.0,
+  },
+  mission_night_harvest: {
+    id: 'mission_night_harvest',
+    title: 'Silent Night Harvest',
+    description: 'Recover ancient crystals under sentry watch. Pure stealth, distractions, and blade combat.',
+    allowFirearms: false,
+    startingAmmo: 0,
+    maxAmmo: 0,
+    firearmNoiseRadius: 0,
+  },
+};
+
+export function getMissionConfig(missionId?: string): MissionConfig {
+  if (missionId && MISSION_CONFIGS[missionId]) {
+    return MISSION_CONFIGS[missionId];
+  }
+  return MISSION_CONFIGS['mission_shadow_escape'];
+}
 
 export interface SolidObjectManifestItem {
   id: string;

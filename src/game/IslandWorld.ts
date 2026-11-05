@@ -11,6 +11,7 @@ import {
   createRock,
   createRuneAltar,
   createSunTempleRuins,
+  createSunTempleRuinsLOD,
   createTree,
   createWaterMesh,
   createTreasureChest,
@@ -32,8 +33,11 @@ import {
   createCheckpointArch,
   createFinishLineArch,
   createStoneCottage,
+  createStoneCottageLOD,
   createWatchtower,
+  createWatchtowerLOD,
   createSupplyWagon,
+  createSupplyWagonLOD,
   createStreetlamp,
   createParkBench,
   createHedge,
@@ -48,8 +52,18 @@ import { obstacleSystem } from './obstacleSystem';
 import { survivalSystem } from './survivalSystem';
 import { networkSync } from './networkSync';
 import { CameraController } from './cameraController';
-import { CollisionSystem, CollisionLayer } from './collisionSystem';
+import { CollisionSystem, CollisionLayer, ISLAND_PLAYABLE_RADIUS, clampStoneLandingLocation } from './collisionSystem';
 import { GuardAIController } from './guardAI';
+import { LODSystem } from './lodSystem';
+import { getMissionConfig } from './levelManifest';
+
+export function seededRng(seed: number) {
+  let s = Math.abs(seed | 0) || 12345;
+  return function() {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
 
 
 // Pre-allocated math variables for 0-GC loop
@@ -139,6 +153,10 @@ export interface InputState {
   crouch: boolean;
   jump: boolean;
   interact: boolean;
+  attack: boolean;
+  parry: boolean;
+  dodge: boolean;
+  shoot: boolean;
   // Virtual joystick (-1 to 1)
   joystickX: number;
   joystickY: number;
@@ -157,6 +175,7 @@ export class IslandWorld {
   public cameraController: CameraController = new CameraController();
   public collisionSystem: CollisionSystem = new CollisionSystem();
   public guardAIController: GuardAIController = new GuardAIController();
+  public lodSystem: LODSystem = new LODSystem();
 
   // Game mode
   public mode: GameMode = 'menu';
@@ -200,6 +219,10 @@ export class IslandWorld {
   private altarPosition: THREE.Vector3 = new THREE.Vector3(0, 2.8, 2);
 
   // Collectibles, Obstacles & Hazards
+  public currentSeed: number = 104729;
+  public stoneCooldown: number = 0;
+  private stoneRipples: Array<{ mesh: THREE.Mesh; life: number }> = [];
+
   public get worldObstacles() {
     return this.collisionSystem.getObstacles();
   }
@@ -242,7 +265,28 @@ export class IslandWorld {
     totalCheckpoints: 5,
     survivalTimeRemaining: 240,
     survivalActive: true,
+    caughtCount: 0,
+    missionPhase: 'orient',
+    sessionSeed: 104729,
+    stoneCooldown: 0,
+    // Phase 7 Hybrid Combat
+    currentMissionId: 'mission_shadow_escape',
+    firearmAuthorized: false,
+    ammoCount: 0,
+    maxAmmo: 0,
+    playerHealth: 100,
+    maxPlayerHealth: 100,
+    attackCooldown: 0,
+    dodgeCooldown: 0,
+    isParrying: false,
   };
+
+  // Combat State Tracking
+  private playerCombatState: 'idle' | 'attack' | 'parry' | 'dodge' | 'hit' = 'idle';
+  private playerCombatTimer: number = 0;
+  private playerDodgeTimer: number = 0;
+  private playerInvincibilityTimer: number = 0;
+  private currentWeapon: 'none' | 'blade' | 'firearm' = 'blade';
 
   // Interaction prompt, tutorial, puzzle & notification callbacks for HUD
   public onPromptChange?: (prompt: string | null) => void;
@@ -283,6 +327,10 @@ export class IslandWorld {
     crouch: false,
     jump: false,
     interact: false,
+    attack: false,
+    parry: false,
+    dodge: false,
+    shoot: false,
     joystickX: 0,
     joystickY: 0,
   };
@@ -294,6 +342,7 @@ export class IslandWorld {
   // Dynamic Environment & Lighting System
   private sunLight!: THREE.DirectionalLight;
   private hemiLight!: THREE.HemisphereLight;
+  private ambientLight!: THREE.AmbientLight;
   private campFireLight: THREE.PointLight | null = null;
   private starfield: ReturnType<typeof createStarfield> | null = null;
   private rainSystem: ReturnType<typeof createRainSystem> | null = null;
@@ -340,6 +389,8 @@ export class IslandWorld {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     container.appendChild(this.renderer.domElement);
+    (window as any).__rendererInfo = () => this.renderer.info.render;
+    (window as any).__getPerformanceStats = () => this.getPerformanceStats();
 
     // 3. Scene & Camera
     this.scene = new THREE.Scene();
@@ -397,6 +448,7 @@ export class IslandWorld {
     this.player = createAdventurerModel('#e67e22', '#8e44ad');
     this.player.group.position.copy(this.playerPos);
     this.scene.add(this.player.group);
+    this.player.setSwordVisible?.(true);
 
     // 11. Companion setup (Multiplayer preview)
     this.companion = createAdventurerModel('#2980b9', '#16a085');
@@ -406,8 +458,22 @@ export class IslandWorld {
 
     // 12. Guard Patrol AI setup
     this.guardAIController.initGuards(this.scene);
+    this.guardAIController.onPlayerSpotted = (_guardName) => {
+      this.questProgress.caughtCount++;
+      if (this.onQuestUpdate) this.onQuestUpdate({ ...this.questProgress });
+      if (this.onToastNotification) {
+        this.onToastNotification({
+          type: 'achievement',
+          title: 'Alert: Guard Spotted You!',
+          message: 'Break line of sight and hide before the guard catches up!',
+        });
+      }
+    };
     this.guardAIController.onPlayerCaught = (guardName) => {
       this.triggerFailure(`Spotted and caught by ${guardName}!`);
+    };
+    this.guardAIController.onGuardStrike = (guard) => {
+      this.takeDamage(15);
     };
 
     // Bind event listeners
@@ -441,6 +507,10 @@ export class IslandWorld {
     this.hemiLight = new THREE.HemisphereLight(0x8cd3ff, 0x4d7c0f, 0.7);
     this.scene.add(this.hemiLight);
 
+    // Ambient light for subtle fill in shadows
+    this.ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
+    this.scene.add(this.ambientLight);
+
     // Campsite flickering fire point light
     this.campFireLight = new THREE.PointLight(0xff7700, 1.2, 14);
     this.campFireLight.position.set(-22, getIslandHeight(-22, 24) + 0.9, 24);
@@ -458,9 +528,24 @@ export class IslandWorld {
     this.scene.add(camp);
 
     // Sun Temple ruins on North-East hill
-    const sunTemple = createSunTempleRuins();
+    const sunTemple = createSunTempleRuinsLOD();
     sunTemple.position.set(18, getIslandHeight(18, -18), -18);
     this.scene.add(sunTemple);
+    this.lodSystem.register(sunTemple, 160);
+
+    // Register colliders for stealth cover debris
+    const debrisOffsets = [
+      [-2.5, 2.5], [2.5, -2.5], [3.5, 3.5], [-3.5, -3.5]
+    ];
+    debrisOffsets.forEach(([dx, dz]) => {
+      this.collisionSystem.registerBoxObstacle(
+        18 + dx - 0.6, 18 + dx + 0.6,
+        -18 + dz - 0.6, -18 + dz + 0.6,
+        CollisionLayer.PROPS,
+        'temple_debris'
+      );
+    });
+
 
     // River Bridge
     const bridge = createBridge();
@@ -472,38 +557,42 @@ export class IslandWorld {
 
     // --- Architectural Outpost & Settlement Structures ---
     // 1. Village Cottage North (x: -10, z: 12)
-    const cottageN = createStoneCottage(6.2, 3.6, 5.2);
+    const cottageN = createStoneCottageLOD(6.2, 3.6, 5.2);
     const cottageNy = getIslandHeight(-10, 12);
     cottageN.position.set(-10, cottageNy, 12);
     cottageN.rotation.y = 0.2;
     this.scene.add(cottageN);
+    this.lodSystem.register(cottageN, 120);
     this.collisionSystem.registerBoxObstacle(-13.1, -6.9, 9.4, 14.6, CollisionLayer.STATIC_WORLD);
     this.collisionSystem.registerDoor('cottage_north_door', -10.7, -9.3, 14.3, 14.7);
     this.collisionSystem.setDoorOpen('cottage_north_door', true);
 
     // 2. Village Storehouse South (x: -4, z: 16)
-    const cottageS = createStoneCottage(5.4, 3.4, 4.8);
+    const cottageS = createStoneCottageLOD(5.4, 3.4, 4.8);
     const cottageSy = getIslandHeight(-4, 16);
     cottageS.position.set(-4, cottageSy, 16);
     cottageS.rotation.y = -0.35;
     this.scene.add(cottageS);
+    this.lodSystem.register(cottageS, 120);
     this.collisionSystem.registerBoxObstacle(-6.7, -1.3, 13.6, 18.4, CollisionLayer.STATIC_WORLD);
     this.collisionSystem.registerDoor('cottage_south_door', -4.7, -3.3, 18.2, 18.6);
     this.collisionSystem.setDoorOpen('cottage_south_door', true);
 
     // 3. Coastal Guard Watchtower (x: -28, z: 8)
-    const tower = createWatchtower();
+    const tower = createWatchtowerLOD();
     const towerY = getIslandHeight(-28, 8);
     tower.position.set(-28, towerY, 8);
     this.scene.add(tower);
+    this.lodSystem.register(tower, 150);
     this.collisionSystem.registerObstacle(-28, 8, 1.8);
 
     // 4. Merchant Supply Wagon (x: -12, z: 18)
-    const wagon = createSupplyWagon();
+    const wagon = createSupplyWagonLOD();
     const wagonY = getIslandHeight(-12, 18);
     wagon.position.set(-12, wagonY, 18);
     wagon.rotation.y = 0.6;
     this.scene.add(wagon);
+    this.lodSystem.register(wagon, 100);
     this.collisionSystem.registerObstacle(-12, 18, 1.6);
 
     // 5. Village Iron Streetlamps
@@ -687,27 +776,108 @@ export class IslandWorld {
     this.scene.add(this.windSystem.points);
   }
 
-  private setupKeys() {
-    // 1. Sun Key at Sun Temple Ruins
-    const sunPos = new THREE.Vector3(18, getIslandHeight(18, -18) + 1.8, -18);
-    const sunKey = createKeyItem('sun');
-    sunKey.position.copy(sunPos);
-    this.scene.add(sunKey);
-    this.keys.set('sun', { group: sunKey, collected: false, pos: sunPos });
+  public setupKeys(seed?: number) {
+    if (seed !== undefined) {
+      this.currentSeed = seed;
+    }
+    this.questProgress.sessionSeed = this.currentSeed;
 
-    // 2. Ocean Key at Waterfall Grotto river bend
-    const oceanPos = new THREE.Vector3(-12, getIslandHeight(-12, -10) + 1.3, -10);
-    const oceanKey = createKeyItem('ocean');
-    oceanKey.position.copy(oceanPos);
-    this.scene.add(oceanKey);
-    this.keys.set('ocean', { group: oceanKey, collected: false, pos: oceanPos });
+    // Safely remove existing key objects from scene if any
+    this.keys.forEach((k) => {
+      if (k.group.parent) {
+        this.scene.remove(k.group);
+      }
+    });
+    this.keys.clear();
 
-    // 3. Forest Key at Sacred Ancient Grove
-    const forestPos = new THREE.Vector3(20, getIslandHeight(20, 18) + 1.4, 18);
-    const forestKey = createKeyItem('forest');
-    forestKey.position.copy(forestPos);
-    this.scene.add(forestKey);
-    this.keys.set('forest', { group: forestKey, collected: false, pos: forestPos });
+    // Curated candidate locations for key variation (Validated for reachability, ground height, collision)
+    const candidates = [
+      { id: 'sun', spots: [
+        { x: 18, z: -18, h: 1.8 }, // Temple Ruins dais
+        { x: 2, z: -28, h: 1.2 },  // Mountain Peak Terrace
+        { x: 22, z: -20, h: 1.3 }, // Temple Terrace
+      ]},
+      { id: 'ocean', spots: [
+        { x: -12, z: -10, h: 1.3 }, // Waterfall Grotto
+        { x: -28, z: 27, h: 1.1 },  // Secret Cove
+        { x: -18, z: -2, h: 1.2 },  // River Gorge Cliff
+      ]},
+      { id: 'forest', spots: [
+        { x: 20, z: 18, h: 1.4 },  // Sacred Grove
+        { x: 24, z: 22, h: 1.2 },  // Grove Secret Vault
+        { x: 12, z: 11, h: 1.3 },  // Trail to Grove
+      ]},
+    ];
+
+    const rng = seededRng(this.currentSeed);
+    
+    candidates.forEach((c) => {
+      const spotIdx = Math.floor(rng() * c.spots.length);
+      const spot = c.spots[spotIdx];
+      const pos = new THREE.Vector3(spot.x, getIslandHeight(spot.x, spot.z) + spot.h, spot.z);
+      const keyItem = createKeyItem(c.id as KeyType);
+      keyItem.position.copy(pos);
+      this.scene.add(keyItem);
+      this.keys.set(c.id as KeyType, { group: keyItem, collected: false, pos });
+    });
+  }
+
+  /**
+   * Tactical Distraction: Throws a stone to a target position to distract guards.
+   * Rate-limited with a 3.0-second cooldown. Validates coordinates and creates visual/audio feedback.
+   */
+  public throwStone(): boolean {
+    if (this.mode !== 'playing' || this.questProgress.missionPhase === 'orient') return false;
+    if (this.stoneCooldown > 0) return false;
+    
+    // Calculate throw target 8m ahead in player facing direction
+    _vec3A.set(Math.sin(this.playerRotation), 0, Math.cos(this.playerRotation)).normalize();
+    _vec3B.copy(this.playerPos).addScaledVector(_vec3A, 8.0);
+    
+    // Clamp landing coordinates to playable boundary and dry terrain above water
+    clampStoneLandingLocation(_vec3B);
+    
+    // Trigger noise in AI system
+    this.guardAIController.triggerNoiseDistraction(_vec3B, 11.0);
+    sound.playLand(); // Stone impact sound
+    
+    // Spawn visual impact ripple at landing location
+    this.spawnStoneRipple(_vec3B);
+    
+    // Set 3.0s cooldown
+    this.stoneCooldown = 3.0;
+    this.questProgress.stoneCooldown = 3.0;
+    if (this.onQuestUpdate) this.onQuestUpdate({ ...this.questProgress });
+    
+    if (this.onToastNotification) {
+      this.onToastNotification({
+        type: 'achievement',
+        title: 'Stone Thrown',
+        message: 'Guards nearby are investigating the noise.',
+      });
+    }
+    return true;
+  }
+
+  private spawnStoneRipple(pos: THREE.Vector3) {
+    const geo = new THREE.RingGeometry(0.1, 0.45, 16);
+    geo.rotateX(-Math.PI / 2);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xf59e0b,
+      transparent: true,
+      opacity: 0.9,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(pos.x, pos.y + 0.08, pos.z);
+    this.scene.add(mesh);
+    this.stoneRipples.push({ mesh, life: 1.2 });
+  }
+
+  public startMission() {
+    this.questProgress.missionPhase = 'execute';
+    if (this.onQuestUpdate) this.onQuestUpdate({ ...this.questProgress });
   }
 
   private setupTreasureChests() {
@@ -974,18 +1144,44 @@ export class IslandWorld {
     this.player.setOutfitColor(tunic, hat);
   }
 
+  public getPerformanceStats() {
+    return {
+      drawCalls: this.renderer.info.render.calls,
+      triangles: this.renderer.info.render.triangles,
+      geometries: this.renderer.info.memory.geometries,
+      textures: this.renderer.info.memory.textures,
+    };
+  }
+
   public setGraphicsQuality(quality: 'low' | 'medium' | 'high') {
     if (this.isSoftwareGl) return;
-    if (quality === 'low') {
-      this.renderer.shadowMap.enabled = false;
-      this.renderer.setPixelRatio(1);
-    } else if (quality === 'medium') {
-      this.renderer.shadowMap.enabled = true;
-      this.renderer.setPixelRatio(1);
-    } else {
-      this.renderer.shadowMap.enabled = true;
-      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    
+    // Shadow resolution and bias presets
+    const shadowConfigs = {
+      low: { enabled: false, res: 512, bias: -0.001, normalBias: 0.01 },
+      medium: { enabled: true, res: 1024, bias: -0.0005, normalBias: 0.02 },
+      high: { enabled: true, res: 2048, bias: -0.0002, normalBias: 0.03 }
+    };
+
+    const config = shadowConfigs[quality];
+    this.renderer.shadowMap.enabled = config.enabled;
+    if (config.enabled) {
+      this.sunLight.shadow.mapSize.width = config.res;
+      this.sunLight.shadow.mapSize.height = config.res;
+      this.sunLight.shadow.bias = config.bias;
+      this.sunLight.shadow.normalBias = config.normalBias;
     }
+    
+    // Ambient light intensity
+    this.ambientLight.intensity = quality === 'low' ? 0.2 : 0.4;
+    
+    // LOD Distance Factor
+    const lodFactors = { low: 0.5, medium: 1.0, high: 1.8 };
+    this.lodSystem.setDistanceFactor(lodFactors[quality]);
+
+    // Pixel Ratio
+    const dpr = quality === 'high' ? Math.min(window.devicePixelRatio, 2) : 1;
+    this.renderer.setPixelRatio(dpr);
   }
 
   // --- Dynamic Environment Controls ---
@@ -1157,6 +1353,25 @@ export class IslandWorld {
       c.instance.update(dt);
     });
 
+    // Update Stone Throw Cooldown & Ripple VFX
+    if (this.stoneCooldown > 0) {
+      this.stoneCooldown = Math.max(0, this.stoneCooldown - dt);
+      this.questProgress.stoneCooldown = this.stoneCooldown;
+    }
+
+    for (let i = this.stoneRipples.length - 1; i >= 0; i--) {
+      const rip = this.stoneRipples[i];
+      rip.life -= dt;
+      rip.mesh.scale.addScalar(dt * 3.5);
+      (rip.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, rip.life / 1.2);
+      if (rip.life <= 0) {
+        this.scene.remove(rip.mesh);
+        rip.mesh.geometry.dispose();
+        (rip.mesh.material as THREE.Material).dispose();
+        this.stoneRipples.splice(i, 1);
+      }
+    }
+
     // Floating motes drift
     if (this.motes) {
       const posAttr = this.motes.geometry.attributes.position;
@@ -1228,6 +1443,7 @@ export class IslandWorld {
 
   // --- Player Physics & Kinematics ---
   private updatePlayer(dt: number, time: number) {
+    this.lodSystem.update(this.camera, time);
     const isCrouching = this.inputs.crouch;
     const isRunning = this.inputs.sprint && !isCrouching;
     const baseSpeed = isCrouching ? 2.2 : isRunning ? 7.8 : 4.5;
@@ -1357,8 +1573,155 @@ export class IslandWorld {
 
     this.player.group.position.copy(this.playerPos);
 
-    // Update procedural model animations
-    this.player.updateAnimation(time, inputMag, !this.isGrounded, isRunning, isCrouching);
+    // Update procedural model animations with Phase 7 Combat support
+    const combatProgress = this.playerCombatState === 'attack' 
+      ? this.playerCombatTimer / 0.75 
+      : this.playerCombatTimer / 0.5;
+
+    this.player.updateAnimation(
+      time, 
+      inputMag, 
+      !this.isGrounded, 
+      isRunning, 
+      isCrouching,
+      this.playerCombatState,
+      THREE.MathUtils.clamp(combatProgress, 0, 1)
+    );
+
+    // Process Hybrid Combat Logic
+    this.updateCombat(dt, time);
+  }
+
+  private updateCombat(dt: number, time: number) {
+    if (this.mode !== 'playing') return;
+
+    // Tick cooldowns and timers
+    if (this.questProgress.attackCooldown > 0) this.questProgress.attackCooldown -= dt;
+    if (this.questProgress.dodgeCooldown > 0) this.questProgress.dodgeCooldown -= dt;
+    if (this.playerInvincibilityTimer > 0) this.playerInvincibilityTimer -= dt;
+    
+    // Handle combat state transitions
+    if (this.playerCombatState !== 'idle' && this.playerCombatState !== 'parry') {
+      this.playerCombatTimer += dt;
+      
+      const duration = this.playerCombatState === 'attack' ? 0.75 : 0.5;
+      if (this.playerCombatTimer >= duration) {
+        this.playerCombatState = 'idle';
+        this.playerCombatTimer = 0;
+      }
+    }
+    
+    // Process Combat Inputs
+    if (this.playerCombatState === 'idle') {
+      if (this.inputs.attack && this.questProgress.attackCooldown <= 0) {
+        this.executeSwordAttack();
+      } else if (this.inputs.parry) {
+        this.playerCombatState = 'parry';
+        this.questProgress.isParrying = true;
+      } else if (this.inputs.dodge && this.questProgress.dodgeCooldown <= 0) {
+        this.executeDodge();
+      } else if (this.inputs.shoot && this.questProgress.firearmAuthorized && this.questProgress.ammoCount > 0) {
+        this.executeFirearmShot();
+      }
+    }
+    
+    // Reset parry if button released
+    if (this.playerCombatState === 'parry' && !this.inputs.parry) {
+      this.playerCombatState = 'idle';
+      this.questProgress.isParrying = false;
+    }
+  }
+
+  private executeSwordAttack() {
+    this.playerCombatState = 'attack';
+    this.playerCombatTimer = 0;
+    this.questProgress.attackCooldown = 0.8;
+    
+    sound.playSwordSlash();
+    
+    // Hit detection: cone-based sweep 2.2m ahead
+    const guards = this.guardAIController.getGuards();
+    guards.forEach(guard => {
+      if (guard.state === 'disabled') return;
+      const d = this.playerPos.distanceTo(guard.position);
+      if (d < 2.5) {
+        // Angle check
+        _vec3A.set(Math.sin(this.playerRotation), 0, Math.cos(this.playerRotation));
+        _vec3B.subVectors(guard.position, this.playerPos).normalize();
+        if (_vec3A.dot(_vec3B) > 0.45) { // ~120 deg cone
+           this.guardAIController.damageGuard(guard, 35);
+           sound.playSwordClang();
+        }
+      }
+    });
+
+    if (this.onQuestUpdate) this.onQuestUpdate({ ...this.questProgress });
+  }
+
+  private executeDodge() {
+    this.playerCombatState = 'dodge';
+    this.playerCombatTimer = 0;
+    this.questProgress.dodgeCooldown = 1.2;
+    this.playerInvincibilityTimer = 0.5;
+    sound.playDodgeRoll();
+    // Velocity burst in facing direction
+    _vec3A.set(Math.sin(this.playerRotation), 0, Math.cos(this.playerRotation)).multiplyScalar(10.0);
+    this.playerVelocity.add(_vec3A);
+
+    if (this.onQuestUpdate) this.onQuestUpdate({ ...this.questProgress });
+  }
+
+  private executeFirearmShot() {
+    this.questProgress.ammoCount--;
+    this.playerCombatState = 'attack'; // Use attack animation for firing
+    this.playerCombatTimer = 0;
+    this.questProgress.attackCooldown = 1.5;
+    
+    sound.playFirearmShot();
+    
+    // Create loud noise to attract guards (central mission gating)
+    const mission = getMissionConfig(this.questProgress.currentMissionId);
+    this.guardAIController.triggerNoiseDistraction(this.playerPos, mission.firearmNoiseRadius || 24.0);
+    
+    // Raycast hit detection (simplified tight cone)
+    const guards = this.guardAIController.getGuards();
+    guards.forEach(guard => {
+      if (guard.state === 'disabled') return;
+      const d = this.playerPos.distanceTo(guard.position);
+      if (d < 18.0) {
+        _vec3A.set(Math.sin(this.playerRotation), 0, Math.cos(this.playerRotation));
+        _vec3B.subVectors(guard.position, this.playerPos).normalize();
+        if (_vec3A.dot(_vec3B) > 0.96) { // Tight shot
+           this.guardAIController.damageGuard(guard, 100); // Fatal shot
+           sound.playSwordClang();
+        }
+      }
+    });
+    
+    if (this.onQuestUpdate) this.onQuestUpdate({ ...this.questProgress });
+  }
+
+  public takeDamage(amount: number) {
+    if (this.playerInvincibilityTimer > 0 || this.mode !== 'playing') return;
+    
+    // Defensive actions
+    if (this.playerCombatState === 'dodge') return; // Dodging grants I-frames
+
+    // Parrying reduces damage significantly
+    const finalDamage = this.playerCombatState === 'parry' ? Math.floor(amount * 0.15) : amount;
+    
+    this.questProgress.playerHealth = Math.max(0, this.questProgress.playerHealth - finalDamage);
+    this.playerInvincibilityTimer = 0.8;
+    this.playerCombatState = 'hit';
+    this.playerCombatTimer = 0;
+    
+    sound.playLand(); // Flinch sound
+    
+    if (this.onQuestUpdate) this.onQuestUpdate({ ...this.questProgress });
+    
+    if (this.questProgress.playerHealth <= 0) {
+      this.triggerFailure('You were defeated in combat!');
+    }
   }
 
   // --- Proximity & Quest Interactions ---
@@ -1526,13 +1889,14 @@ export class IslandWorld {
 
         // Start Gate opening sequence
         this.questProgress.gateOpening = true;
+        this.questProgress.missionPhase = 'escape';
         sound.playGateOpening();
 
         if (this.onToastNotification) {
           this.onToastNotification({
             type: 'puzzle',
             title: 'Grand Rune Altar Activated!',
-            message: 'Ancient Portal Seal Broken! Proceed to Grand Gate!',
+            message: 'Ancient Portal Seal Broken! ESCAPE NOW!',
           });
         }
 
@@ -1569,6 +1933,8 @@ export class IslandWorld {
   private triggerVictory() {
     this.isVictoryCelebration = true;
     this.mode = 'victory';
+    this.questProgress.missionPhase = 'resolve';
+    if (this.onQuestUpdate) this.onQuestUpdate({ ...this.questProgress });
     sound.playVictoryFanfare();
 
     // Spawn victory celebration confetti particles
@@ -1620,7 +1986,7 @@ export class IslandWorld {
   }
 
   // --- Reset Game ---
-  public resetGame() {
+  public resetGame(newSeed?: number) {
     this.mode = 'playing';
     this.isVictoryCelebration = false;
     this.playerPos.set(-22, 1.0, 24);
@@ -1628,14 +1994,21 @@ export class IslandWorld {
     this.playerRotation = 0;
     this.cameraController.cameraPitch = 0.35;
     this.cameraController.cameraYaw = 0;
+    this.stoneCooldown = 0;
 
-    // Reset keys
-    this.keys.forEach((k) => {
-      k.collected = false;
-      if (!k.group.parent) {
-        this.scene.add(k.group);
-      }
+    // Remove any leftover ripples
+    this.stoneRipples.forEach((r) => {
+      this.scene.remove(r.mesh);
+      r.mesh.geometry.dispose();
+      (r.mesh.material as THREE.Material).dispose();
     });
+    this.stoneRipples = [];
+
+    // Replay with same seed or generate new seed
+    if (newSeed !== undefined) {
+      this.currentSeed = newSeed;
+    }
+    this.setupKeys(this.currentSeed);
 
     // Reset altar & gate
     this.altar.setSolved(false);
@@ -1671,6 +2044,8 @@ export class IslandWorld {
     survivalSystem.resetMission();
     this.guardAIController.resetGuards();
 
+    const mission = getMissionConfig(this.questProgress.currentMissionId);
+
     this.questProgress = {
       keysCollected: { sun: false, ocean: false, forest: false },
       keysCount: 0,
@@ -1691,7 +2066,31 @@ export class IslandWorld {
       totalCheckpoints: 5,
       survivalTimeRemaining: 240,
       survivalActive: true,
+      caughtCount: 0,
+      missionPhase: 'orient',
+      sessionSeed: this.currentSeed,
+      stoneCooldown: 0,
+      // Phase 7 Hybrid Combat
+      currentMissionId: mission.id,
+      firearmAuthorized: mission.allowFirearms,
+      ammoCount: mission.startingAmmo,
+      maxAmmo: mission.maxAmmo,
+      playerHealth: 100,
+      maxPlayerHealth: 100,
+      attackCooldown: 0,
+      dodgeCooldown: 0,
+      isParrying: false,
     };
+
+    this.playerCombatState = 'idle';
+    this.playerCombatTimer = 0;
+    this.playerDodgeTimer = 0;
+    this.playerInvincibilityTimer = 0;
+    this.currentWeapon = mission.allowFirearms ? 'firearm' : 'blade';
+    
+    if (this.player) {
+      this.player.setSwordVisible?.(!mission.allowFirearms);
+    }
 
     this.lastReportedSecond = -1;
     this.lastActivePrompt = null;
@@ -1710,6 +2109,10 @@ export class IslandWorld {
   }
 
   public restoreSavedProgress(savedQuest: QuestProgress, pos: { x: number; y: number; z: number }) {
+    if (savedQuest.sessionSeed) {
+      this.currentSeed = savedQuest.sessionSeed;
+      this.setupKeys(savedQuest.sessionSeed);
+    }
     this.questProgress = { ...savedQuest };
     this.setPlayerPosition(pos.x, pos.y, pos.z);
 

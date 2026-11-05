@@ -15,7 +15,10 @@ import { PuzzleModal } from './components/PuzzleModal';
 import { InventoryModal } from './components/InventoryModal';
 import { AchievementsModal } from './components/AchievementsModal';
 import { FailureModal } from './components/FailureModal';
+import { MissionSelectModal } from './components/MissionSelectModal';
+import { MISSION_CONFIGS, getMissionConfig } from './game/levelManifest';
 import { runCollisionTestSuite } from './game/collisionTests';
+import { runGameplayQATestSuite } from './game/gameplayQATests';
 
 
 const DEFAULT_SETTINGS: GameSettings = {
@@ -75,6 +78,20 @@ export default function App() {
     totalCheckpoints: 5,
     survivalTimeRemaining: 240,
     survivalActive: true,
+    caughtCount: 0,
+    missionPhase: 'orient',
+    sessionSeed: 104729,
+    stoneCooldown: 0,
+    // Phase 7 Hybrid Combat
+    currentMissionId: 'mission_shadow_escape',
+    firearmAuthorized: false,
+    ammoCount: 0,
+    maxAmmo: 0,
+    playerHealth: 100,
+    maxPlayerHealth: 100,
+    attackCooldown: 0,
+    dodgeCooldown: 0,
+    isParrying: false,
   });
 
   const [environmentState, setEnvironmentState] = useState<EnvironmentState>({
@@ -102,6 +119,15 @@ export default function App() {
           }
           return prev;
         });
+
+        // Update Stealth HUD Info
+        const stealth = worldRef.current.getStealthDetection();
+        setStealthInfo((prev) => {
+          if (Math.abs(prev.level - stealth.level) > 1 || prev.state !== stealth.state) {
+            return { level: stealth.level, state: stealth.state };
+          }
+          return prev;
+        });
       }
       animId = requestAnimationFrame(updatePlayerPos);
     };
@@ -116,10 +142,12 @@ export default function App() {
   const [showHowToPlay, setShowHowToPlay] = useState(false);
   const [showInventory, setShowInventory] = useState(false);
   const [showAchievements, setShowAchievements] = useState(false);
+  const [showMissionSelect, setShowMissionSelect] = useState(false);
   const [activePuzzleId, setActivePuzzleId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<NotificationToast[]>([]);
   const [finalTime, setFinalTime] = useState<number>(0);
   const [failureReason, setFailureReason] = useState<string>('Mission Failed!');
+  const [stealthInfo, setStealthInfo] = useState({ level: 0, state: 'patrol' });
 
   const addToast = useCallback((toast: Omit<NotificationToast, 'id' | 'timestamp'>) => {
     const id = `toast_${Date.now()}_${Math.random()}`;
@@ -220,6 +248,11 @@ export default function App() {
     (window as any).__runPhysicsTests = runCollisionTestSuite;
     (window as any).__togglePhysicsWireframes = () => worldRef.current?.togglePhysicsWireframes();
 
+    // Run automated gameplay polish & reliability QA test suite
+    const gameplayQAResults = runGameplayQATestSuite();
+    console.log('[Gameplay QA Test Suite Results]', gameplayQAResults);
+    (window as any).__runGameplayQATests = runGameplayQATestSuite;
+
     const unlockUserAudio = () => {
       sound.unlockAudio();
     };
@@ -249,20 +282,28 @@ export default function App() {
       setActivePuzzleId(pId);
     };
 
+    let lastRecordedKeysCount = 0;
     world.onQuestUpdate = (newQuest) => {
       setQuest(newQuest);
 
-      // Update stats for keys collected
-      setStats((prev) => {
-        const nextStats = {
-          ...prev,
-          totalKeysCollected: prev.totalKeysCollected + 1,
-        };
-        try {
-          localStorage.setItem('escape_adventure_stats', JSON.stringify(nextStats));
-        } catch {}
-        return nextStats;
-      });
+      // Only update lifetime account stats when a key was genuinely collected during play
+      if (newQuest.keysCount > lastRecordedKeysCount) {
+        const diff = newQuest.keysCount - lastRecordedKeysCount;
+        lastRecordedKeysCount = newQuest.keysCount;
+        setStats((prev) => {
+          const nextStats = {
+            ...prev,
+            totalKeysCollected: (prev.totalKeysCollected || 0) + diff,
+          };
+          try {
+            localStorage.setItem('escape_adventure_stats', JSON.stringify(nextStats));
+          } catch {}
+          return nextStats;
+        });
+      } else if (newQuest.keysCount < lastRecordedKeysCount) {
+        // Mission reset/replay: sync counter without modifying account stats
+        lastRecordedKeysCount = newQuest.keysCount;
+      }
     };
 
     world.onVictory = (time) => {
@@ -274,7 +315,8 @@ export default function App() {
         const currentQuest = worldRef.current ? worldRef.current.questProgress : quest;
         const newTotalCoins = (prev.totalCoins || 0) + (currentQuest?.coinsCollected || 0);
         const newTotalChests = (prev.totalChests || 0) + (currentQuest?.chestsOpened || 0);
-        const newXp = (prev.xp || 0) + (currentQuest?.xpEarned || 0);
+        const stealthBonus = Math.max(0, 100 - (currentQuest?.caughtCount || 0) * 25);
+        const newXp = (prev.xp || 0) + (currentQuest?.xpEarned || 0) + stealthBonus;
         const newLevel = Math.max(1, Math.floor(newXp / 250) + 1);
 
         const nextStats: PlayerStats = {
@@ -368,6 +410,20 @@ export default function App() {
       if (code === 'KeyP') {
         worldRef.current.togglePhysicsWireframes();
       }
+      if (code === 'KeyQ' || code === 'KeyG') {
+        if (e.repeat) return; // Ignore key-repeat
+        worldRef.current.throwStone();
+      }
+      if (code === 'KeyF') {
+        const quest = worldRef.current.questProgress;
+        if (quest.firearmAuthorized && quest.ammoCount > 0) {
+          worldRef.current.inputs.shoot = true;
+        } else {
+          worldRef.current.inputs.attack = true;
+        }
+      }
+      if (code === 'KeyR') worldRef.current.inputs.parry = true;
+      if (code === 'KeyX') worldRef.current.inputs.dodge = true;
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -380,6 +436,12 @@ export default function App() {
       if (code === 'ShiftLeft' || code === 'ShiftRight') worldRef.current.inputs.sprint = false;
       if (code === 'KeyC' || code === 'ControlLeft' || code === 'ControlRight') worldRef.current.inputs.crouch = false;
       if (code === 'Space') worldRef.current.inputs.jump = false;
+      if (code === 'KeyF') {
+        worldRef.current.inputs.attack = false;
+        worldRef.current.inputs.shoot = false;
+      }
+      if (code === 'KeyR') worldRef.current.inputs.parry = false;
+      if (code === 'KeyX') worldRef.current.inputs.dodge = false;
     };
 
     const handleBlur = () => {
@@ -435,11 +497,14 @@ export default function App() {
   };
 
   // Actions
-  const handleStartGame = (withCompanion = false, loadSave = true) => {
+  const handleStartGame = (withCompanion = false, loadSave = true, newSeed?: number, missionId?: string) => {
     isTutorialDismissedRef.current = false;
     setTutorialNotice(null);
     if (worldRef.current) {
-      worldRef.current.resetGame();
+      if (missionId) {
+        worldRef.current.questProgress.currentMissionId = missionId;
+      }
+      worldRef.current.resetGame(newSeed);
       worldRef.current.mode = 'playing';
       worldRef.current.setCompanionVisible(withCompanion);
 
@@ -465,6 +530,7 @@ export default function App() {
     }
     setMode('playing');
     setShowMultiplayer(false);
+    setShowMissionSelect(false);
   };
 
   const handleReturnToMenu = () => {
@@ -499,6 +565,7 @@ export default function App() {
           onOpenHowToPlay={() => setShowHowToPlay(true)}
           onOpenSettings={() => setShowSettings(true)}
           onOpenProfile={() => setShowProfile(true)}
+          onOpenMissionSelect={() => setShowMissionSelect(true)}
           playerName={customization.name}
           playerTitle={customization.title}
           isMuted={!settings.soundEnabled}
@@ -542,6 +609,19 @@ export default function App() {
             onOpenAchievements={() => setShowAchievements(true)}
             showFps={settings.showFps}
             playerPos={playerPos}
+            stealthLevel={stealthInfo.level}
+            stealthState={stealthInfo.state as any}
+            stoneCooldownRemaining={quest.stoneCooldown ?? 0}
+            onStartMission={() => {
+              if (worldRef.current) worldRef.current.startMission();
+            }}
+            onThrowStone={() => {
+              if (worldRef.current) worldRef.current.throwStone();
+            }}
+            playerHealth={quest.playerHealth ?? 100}
+            maxPlayerHealth={quest.maxPlayerHealth ?? 100}
+            ammoCount={quest.ammoCount ?? 0}
+            maxAmmo={quest.maxAmmo ?? 0}
           />
 
           {/* Toast Notification Popups */}
@@ -567,6 +647,20 @@ export default function App() {
             onInteract={() => {
               if (worldRef.current) worldRef.current.handleInteract();
             }}
+            onAttack={(active) => {
+              if (worldRef.current) worldRef.current.inputs.attack = active;
+            }}
+            onParry={(active) => {
+              if (worldRef.current) worldRef.current.inputs.parry = active;
+            }}
+            onDodge={(active) => {
+              if (worldRef.current) worldRef.current.inputs.dodge = active;
+            }}
+            onShoot={(active) => {
+              if (worldRef.current) worldRef.current.inputs.shoot = active;
+            }}
+            firearmAuthorized={quest.firearmAuthorized}
+            ammoCount={quest.ammoCount ?? 0}
             isInteractAvailable={Boolean(
               prompt &&
                 (prompt.includes('Press [E]') ||
@@ -586,6 +680,10 @@ export default function App() {
                 ? 'Puzzle'
                 : 'Interact'
             }
+            stoneCooldownRemaining={quest.stoneCooldown ?? 0}
+            onThrowStone={() => {
+              if (worldRef.current) worldRef.current.throwStone();
+            }}
           />
         </>
       )}
@@ -628,7 +726,10 @@ export default function App() {
           chestsOpened={quest.chestsOpened ?? 0}
           totalChests={quest.totalChests ?? 6}
           xpEarned={quest.xpEarned ?? 0}
-          onPlayAgain={() => handleStartGame(worldRef.current?.companionActive ?? false)}
+          caughtCount={quest.caughtCount ?? 0}
+          sessionSeed={quest.sessionSeed ?? 104729}
+          onPlayAgain={() => handleStartGame(worldRef.current?.companionActive ?? false, false, Math.floor(Math.random() * 900000 + 100000))}
+          onReplaySameSeed={() => handleStartGame(worldRef.current?.companionActive ?? false, false, worldRef.current?.currentSeed)}
           onReturnToMenu={handleReturnToMenu}
         />
       )}
@@ -641,7 +742,7 @@ export default function App() {
           totalCrystals={quest.totalCrystals ?? 5}
           coinsCollected={quest.coinsCollected ?? 0}
           timeElapsed={quest.timeElapsed ?? 0}
-          onRetry={() => handleStartGame(worldRef.current?.companionActive ?? false)}
+          onRetry={() => handleStartGame(worldRef.current?.companionActive ?? false, false)}
           onReturnToMenu={handleReturnToMenu}
         />
       )}
@@ -678,6 +779,15 @@ export default function App() {
 
       {/* How to Play Modal */}
       {showHowToPlay && <HowToPlayModal onClose={() => setShowHowToPlay(false)} />}
+
+      {/* Mission Selection Modal (Phase 7 Hybrid Combat) */}
+      {showMissionSelect && (
+        <MissionSelectModal
+          onClose={() => setShowMissionSelect(false)}
+          onSelectMission={(mId) => handleStartGame(false, false, undefined, mId)}
+          currentMissionId={quest.currentMissionId}
+        />
+      )}
     </div>
   );
 }

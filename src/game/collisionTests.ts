@@ -101,7 +101,10 @@ export function runCollisionTestSuite(): PhysicsTestResult[] {
     cs.setDoorOpen('cottage_front', true);
     const posOpen = new THREE.Vector3(0, 1.0, 4.5);
     const velOpen = new THREE.Vector3(0, 0, 10);
-    cs.resolveMovementWithSubstepping(posOpen, velOpen, 0.016, 0.55);
+    // Advance multiple sub-steps to traverse door
+    for (let f = 0; f < 5; f++) {
+      cs.resolveMovementWithSubstepping(posOpen, velOpen, 0.016, 0.55);
+    }
     const openTraversed = posOpen.z > 4.8;
 
     const passed = closedBlocked && openTraversed;
@@ -148,7 +151,7 @@ export function runCollisionTestSuite(): PhysicsTestResult[] {
     const pos = new THREE.Vector3(60.0, 1.0, 0); // Way outside 46m boundary
     cs.clampIslandBounds(pos, 46);
 
-    const dist = pos.length();
+    const dist = Math.hypot(pos.x, pos.z);
     const passed = Math.abs(dist - 46.0) < 0.001;
     results.push({
       testName: 'Island Boundary Clamping',

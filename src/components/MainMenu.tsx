@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { Play, Users, BookOpen, Settings, User, Compass, Key, Sparkles, Volume2, VolumeX } from 'lucide-react';
+import { Play, Users, BookOpen, Settings, User, Compass, Key, Sparkles, Volume2, VolumeX, Swords, Crosshair } from 'lucide-react';
 import { sound } from '../audio/soundSystem';
 
 interface MainMenuProps {
@@ -8,6 +8,7 @@ interface MainMenuProps {
   onOpenHowToPlay: () => void;
   onOpenSettings: () => void;
   onOpenProfile: () => void;
+  onOpenMissionSelect: () => void;
   playerName: string;
   playerTitle: string;
   isMuted: boolean;
@@ -20,6 +21,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
   onOpenHowToPlay,
   onOpenSettings,
   onOpenProfile,
+  onOpenMissionSelect,
   playerName,
   playerTitle,
   isMuted,
@@ -164,6 +166,24 @@ export const MainMenu: React.FC<MainMenuProps> = ({
             <span>Play Solo Adventure</span>
             <span className="text-[10px] bg-slate-950/20 text-slate-900 px-2 py-0.5 rounded font-mono font-bold tracking-normal hidden sm:inline">
               SPACE
+            </span>
+          </button>
+
+          {/* MISSION SELECT CTA (Phase 7 Hybrid Combat Gate) */}
+          <button
+            onClick={() => {
+              sound.playClick();
+              onOpenMissionSelect();
+            }}
+            className="group w-full py-3 sm:py-3.5 px-5 rounded-2xl bg-slate-950/40 hover:bg-slate-900/60 text-amber-100 font-bold text-xs sm:text-sm uppercase tracking-widest border border-amber-500/30 hover:border-amber-400/60 shadow-xl transition-all transform hover:-translate-y-0.5 flex items-center justify-center gap-2.5 cursor-pointer"
+          >
+            <div className="flex -space-x-1">
+              <Swords className="w-4 h-4 text-amber-400" />
+              <Crosshair className="w-4 h-4 text-amber-500" />
+            </div>
+            <span>Mission Selection</span>
+            <span className="text-[9px] bg-amber-600/20 text-amber-400 px-1.5 py-0.5 rounded border border-amber-500/30">
+              Combat Briefing
             </span>
           </button>
 

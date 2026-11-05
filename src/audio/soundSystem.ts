@@ -15,6 +15,7 @@ class SoundSystem {
   private isAmbientPlaying: boolean = false;
 
   private initContext() {
+    if (typeof window === 'undefined') return;
     if (!this.ctx) {
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (AudioCtx) {
@@ -369,6 +370,122 @@ class SoundSystem {
       osc.stop(now + note.delay + note.d);
     });
   }
+  
+  public playSwordSlash() {
+    this.initContext();
+    if (!this.ctx || !this.sfxGain || this.isMuted) return;
+    const now = this.ctx.currentTime;
+    
+    // Quick "whoosh" sound using bandpass filtered noise
+    const bufferSize = this.ctx.sampleRate * 0.2;
+    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+    
+    const source = this.ctx.createBufferSource();
+    source.buffer = buffer;
+    
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(2000, now);
+    filter.frequency.exponentialRampToValueAtTime(100, now + 0.15);
+    filter.Q.setValueAtTime(10, now);
+    
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.3, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.sfxGain);
+    
+    source.start(now);
+    source.stop(now + 0.18);
+  }
+
+  public playSwordClang() {
+    this.initContext();
+    if (!this.ctx || !this.sfxGain || this.isMuted) return;
+    const now = this.ctx.currentTime;
+    
+    // High-pitched metallic ring
+    const oscs = [880, 1320, 2200];
+    oscs.forEach((f, i) => {
+      const osc = this.ctx!.createOscillator();
+      const gain = this.ctx!.createGain();
+      osc.type = i === 0 ? 'sine' : 'triangle';
+      osc.frequency.setValueAtTime(f, now);
+      gain.gain.setValueAtTime(0.15, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+      osc.connect(gain);
+      gain.connect(this.sfxGain!);
+      osc.start(now);
+      osc.stop(now + 0.25);
+    });
+  }
+
+  public playFirearmShot() {
+    this.initContext();
+    if (!this.ctx || !this.sfxGain || this.isMuted) return;
+    const now = this.ctx.currentTime;
+    
+    // Explosive noise + low-end thump
+    const bufferSize = this.ctx.sampleRate * 0.4;
+    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+    
+    const source = this.ctx.createBufferSource();
+    source.buffer = buffer;
+    
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(1000, now);
+    filter.frequency.exponentialRampToValueAtTime(100, now + 0.05);
+    
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.6, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+    
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.sfxGain);
+    
+    // Extra low-end boom
+    const osc = this.ctx.createOscillator();
+    const oscGain = this.ctx.createGain();
+    osc.frequency.setValueAtTime(120, now);
+    osc.frequency.exponentialRampToValueAtTime(40, now + 0.1);
+    oscGain.gain.setValueAtTime(0.4, now);
+    oscGain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+    osc.connect(oscGain);
+    oscGain.connect(this.sfxGain);
+    
+    source.start(now);
+    source.stop(now + 0.4);
+    osc.start(now);
+    osc.stop(now + 0.15);
+  }
+
+  public playDodgeRoll() {
+    this.initContext();
+    if (!this.ctx || !this.sfxGain || this.isMuted) return;
+    const now = this.ctx.currentTime;
+    
+    // Low frequency whoosh
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(80, now);
+    osc.frequency.linearRampToValueAtTime(140, now + 0.1);
+    osc.frequency.exponentialRampToValueAtTime(40, now + 0.3);
+    gain.gain.setValueAtTime(0.2, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+    osc.connect(gain);
+    gain.connect(this.sfxGain);
+    osc.start(now);
+    osc.stop(now + 0.3);
+  }
 
   // --- Ambient Background Nature/Music Chords ---
 
@@ -415,7 +532,7 @@ class SoundSystem {
         osc.stop(now + 5.0);
       });
 
-      this.ambientTimer = window.setTimeout(playChord, 5200);
+      this.ambientTimer = typeof window !== 'undefined' ? (window.setTimeout(playChord, 5200) as unknown as number) : null;
     };
 
     playChord();

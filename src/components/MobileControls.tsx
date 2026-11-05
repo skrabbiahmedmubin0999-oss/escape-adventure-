@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { ArrowUp, Hand, Zap, EyeOff } from 'lucide-react';
+import { ArrowUp, Hand, Zap, EyeOff, Shield, Crosshair, Swords } from 'lucide-react';
 
 interface MobileControlsProps {
   onJoystickMove: (x: number, y: number) => void;
@@ -9,6 +9,15 @@ interface MobileControlsProps {
   onInteract: () => void;
   isInteractAvailable: boolean;
   interactLabel?: string;
+  stoneCooldownRemaining?: number;
+  onThrowStone?: () => void;
+  // Phase 7 Combat
+  onAttack: (active: boolean) => void;
+  onParry: (active: boolean) => void;
+  onDodge: (active: boolean) => void;
+  onShoot: (active: boolean) => void;
+  firearmAuthorized: boolean;
+  ammoCount: number;
 }
 
 export const MobileControls: React.FC<MobileControlsProps> = ({
@@ -19,6 +28,14 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
   onInteract,
   isInteractAvailable,
   interactLabel,
+  stoneCooldownRemaining = 0,
+  onThrowStone,
+  onAttack,
+  onParry,
+  onDodge,
+  onShoot,
+  firearmAuthorized,
+  ammoCount,
 }) => {
   const stickBaseRef = useRef<HTMLDivElement>(null);
   const [knobPos, setKnobPos] = useState({ x: 0, y: 0 });
@@ -188,8 +205,78 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
           </button>
         )}
 
-        {/* Action Buttons Cluster: HIDE/CROUCH, RUN & JUMP */}
-        <div className="flex items-center gap-2.5">
+        {/* Phase 7 Combat Action Buttons (Right-hand dominant cluster) */}
+        <div className="flex items-center justify-end gap-2.5 sm:gap-3 mb-1">
+          {/* DODGE / EVADE Button */}
+          <button
+            onClick={() => onDodge(true)}
+            className="w-12 h-12 sm:w-14 sm:h-14 rounded-full flex flex-col items-center justify-center bg-slate-900/85 text-amber-500 border border-amber-500/40 active:bg-amber-600 active:scale-95 cursor-pointer shadow-lg transition-all"
+            aria-label="Dodge"
+          >
+            <Zap className="w-4 h-4 text-amber-400" />
+            <span className="text-[8px] font-black uppercase tracking-tight">Dodge</span>
+          </button>
+
+          {/* BLOCK / PARRY Button (Hold) */}
+          <button
+            onTouchStart={(e) => { e.preventDefault(); onParry(true); }}
+            onTouchEnd={(e) => { e.preventDefault(); onParry(false); }}
+            onTouchCancel={(e) => { e.preventDefault(); onParry(false); }}
+            onMouseDown={() => onParry(true)}
+            onMouseUp={() => onParry(false)}
+            onMouseLeave={() => onParry(false)}
+            className="w-12 h-12 sm:w-14 sm:h-14 rounded-full flex flex-col items-center justify-center bg-slate-900/85 text-sky-400 border border-sky-400/40 active:bg-sky-600 active:scale-95 cursor-pointer shadow-lg transition-all"
+            aria-label="Block"
+          >
+            <Shield className="w-4 h-4 text-sky-300" />
+            <span className="text-[8px] font-black uppercase tracking-tight">Block</span>
+          </button>
+
+          {/* PRIMARY ATTACK: Strike (Sword) or Fire (Firearm) */}
+          <button
+            onClick={() => (firearmAuthorized && ammoCount > 0) ? onShoot(true) : onAttack(true)}
+            className="w-16 h-16 sm:w-20 sm:h-20 rounded-full flex flex-col items-center justify-center bg-gradient-to-tr from-red-700 to-red-500 active:from-red-600 active:to-red-400 text-white shadow-2xl border-2 border-white/50 active:scale-95 transition-all cursor-pointer relative"
+            aria-label={(firearmAuthorized && ammoCount > 0) ? "Fire Weapon" : "Sword Strike"}
+          >
+            {(firearmAuthorized && ammoCount > 0) ? (
+              <>
+                <Crosshair className="w-8 h-8 sm:w-10 sm:h-10 text-white drop-shadow-md" />
+                <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-widest -mt-1">Fire</span>
+                {/* Ammo Count Indicator */}
+                <div className="absolute -top-1 -right-1 bg-slate-950 text-amber-400 text-[10px] font-black px-1.5 py-0.5 rounded-lg border border-amber-500 shadow-lg">
+                  {ammoCount}
+                </div>
+              </>
+            ) : (
+              <>
+                <Swords className="w-8 h-8 sm:w-10 sm:h-10 text-white drop-shadow-md" />
+                <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-widest -mt-1">Strike</span>
+              </>
+            )}
+          </button>
+        </div>
+
+        {/* Action Buttons Cluster: DISTRACT, HIDE/CROUCH, RUN & JUMP */}
+        <div className="flex items-center gap-2 sm:gap-2.5">
+          {/* Stone Throw Distraction Button */}
+          <button
+            onClick={() => {
+              if (stoneCooldownRemaining <= 0) onThrowStone?.();
+            }}
+            disabled={stoneCooldownRemaining > 0}
+            className={`w-12 h-12 sm:w-14 sm:h-14 rounded-full flex flex-col items-center justify-center shadow-lg border transition-all ${
+              stoneCooldownRemaining > 0
+                ? 'bg-slate-950/90 text-slate-600 border-slate-800 opacity-60 cursor-not-allowed'
+                : 'bg-slate-900/85 text-amber-500 border-amber-500/40 active:bg-amber-600 active:scale-95 cursor-pointer'
+            }`}
+            aria-label="Distract Guard"
+          >
+            <Zap className={`w-4 h-4 ${stoneCooldownRemaining > 0 ? 'text-slate-600' : 'text-amber-400'} rotate-180`} />
+            <span className="text-[9px] font-extrabold uppercase tracking-tight">
+              {stoneCooldownRemaining > 0 ? `${stoneCooldownRemaining.toFixed(0)}s` : 'Distract'}
+            </span>
+          </button>
+
           {/* Hold CROUCH / HIDE Button */}
           <button
             onTouchStart={handleCrouchStart}
