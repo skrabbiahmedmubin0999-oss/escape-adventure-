@@ -1,0 +1,6 @@
+{
+  "name": "Escape Adventure: 3D Island Quest",
+  "description": "A colorful, vibrant 3D adventure escape game. Explore a mysterious tropical island, discover ancient secrets, collect elemental keys, solve the rune puzzle, and unlock the escape portal.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
